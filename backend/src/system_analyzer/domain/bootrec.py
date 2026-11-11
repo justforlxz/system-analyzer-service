@@ -7,7 +7,7 @@
 1.1 的事，把 ``.bootrec`` 转成内部结构是 1.3 的事。
 
 时间字段的语义（``monotonic_ns``、``realtime_ns``、``clock_domain`` 的取值规则）由任务
-0.3 定稿，这里只固定类型与单位，语义按草稿执行，文档中标注「此项待 0.3 定稿」。
+0.3 定稿，见 ``docs/time-base.md``；本模块只固定类型与单位，换算规则在 ``time_base`` 模块。
 """
 
 import hashlib
@@ -57,7 +57,7 @@ class RecordKind(StrEnum):
 
 
 class ClockDomain(StrEnum):
-    """``monotonic_ns`` 所在的时间域。此项待 0.3 定稿。"""
+    """``monotonic_ns`` 所在的时间域。取值与判定规则见 ``docs/time-base.md`` 第 2 节。"""
 
     BOOT_MONOTONIC = "boot_monotonic"
     WALL_REALTIME = "wall_realtime"

@@ -6,7 +6,7 @@
 - 可执行版本：`backend/src/system_analyzer/domain/bootrec.py`。字段名、必填项、缺失语义以本文档为准；
   文档与代码冲突时先改文档，再改代码。
 - 时间字段的语义（`monotonic_ns`、`realtime_ns`、`clock_domain` 的取值规则与跨数据源换算）
-  由任务 0.3 定稿。本文档只固定字段名、类型与单位，语义标注为「此项待 0.3 定稿」，不提前定稿。
+  由任务 0.3 定稿，见 `docs/time-base.md`。本文档只固定字段名、类型与单位。
 - 本文档只定义模型，不定义存储表结构与导入流程。
 
 目录：
@@ -19,7 +19,7 @@
 6. 实体之间的关联关系
 7. 数据缺失的表达方式
 8. 幂等判据
-9. 待 0.3 定稿的项
+9. 时间字段的语义（已由 0.3 定稿）
 
 ## 1. 设计约束
 
@@ -66,9 +66,9 @@
 | `collection_id` | string | — | 是 | 必填，且必须等于所属 collection 的 `collection_id` |
 | `source_plugin` | string | — | 是 | 必填，表示产生这条记录的插件 id；不允许空串，也不允许用 `unknown` 占位 |
 | `stream_id` | string | — | 是 | 必填，表示同一来源下的一条逻辑流（如 `systemd.units`、`cpu`）；缺失即无法把采样串成序列 |
-| `monotonic_ns` | int64 | 纳秒 | 条件必填：与 `realtime_ns` 至少有一个非空 | `null` 表示这次采集没有可用的单调时钟读数，读取方按 0.3 的换算规则处理，不得当作 0 |
+| `monotonic_ns` | int64 | 纳秒 | 条件必填：与 `realtime_ns` 至少有一个非空 | `null` 表示这次采集没有可用的单调时钟读数，读取方按 `docs/time-base.md` 第 2、4 节的规则处理，不得当作 0 |
 | `realtime_ns` | int64 | 纳秒（Unix 纪元） | 条件必填：与 `monotonic_ns` 至少有一个非空 | `null` 表示没有墙钟读数，不得当作 0 |
-| `clock_domain` | enum(`boot_monotonic`、`wall_realtime`) | — | 是 | 必填，表示 `monotonic_ns` 所在的时间域（此项待 0.3 定稿） |
+| `clock_domain` | enum(`boot_monotonic`、`wall_realtime`) | — | 是 | 必填，表示 `monotonic_ns` 所在的时间域（取值与判定规则见 `docs/time-base.md` 第 2 节） |
 | `entity` | string 或 `null` | — | 否 | `null` 表示这条记录不绑定某个具体实体（如整机级 Artifact）；非空时必须能在 `entities.jsonl` 里解析到，且 `metric`、`span` 不得为 `null` |
 | `payload` | object | — | 是 | 结构由 `kind` 决定（第 4 节）；`payload` 内各字段的必填性按对象定义，不允许用空对象顶替 |
 
@@ -251,7 +251,7 @@ Machine 1 ──< Boot 1 ──< Collection 1 ──< Record
 
 1. 只用上表的键做连接，不新增隐式约定（如「文件名里带服务名」「同一行即同一实体」）。
 2. 连接失败时按「缺失」处理并报告，不猜测、不填充。
-3. 跨启动的对比走时间线的对齐规则（0.3 定稿），不通过合并实体实现。
+3. 跨启动的对比走时间线的对齐规则（见 `docs/time-base.md` 第 3 节），不通过合并实体实现。
 
 ## 7. 数据缺失的表达方式
 
@@ -297,15 +297,15 @@ record_id = blake2b_128( 规范化 JSON( 除 record_id 之外的全部字段 ) )
 - 代价是内容相同的两条独立事实（如同一毫秒同一个单元的两条一样的事件）会被合并成一条。当前六类
   对象里每条记录都带时间与来源，真正完全相同意味着「同一个事实被采了两次」，合并是正确的。
 
-## 9. 待 0.3 定稿的项
+## 9. 时间字段的语义（已由 0.3 定稿）
 
-以下内容由任务 0.3（时间基准与跨数据源关联规范）定稿，本文档只给出字段与单位：
+以下五项已由任务 0.3（时间基准与跨数据源关联规范）在 `docs/time-base.md` 定稿。本文档只给出
+字段与单位，语义与该文档冲突时以该文档为准：
 
-1. `clock_domain` 的完整取值集合，以及 `boot_monotonic` 与 `wall_realtime` 的换算与漂移处理规则。
-2. `monotonic_ns` 的零点定义（内核启动时刻还是采集开始时刻）以及跨 boot 比较的允许方式。
-3. `Span` 的开放区间（`end_*_ns` 为 `null`）在时间线上的收尾规则。
-4. 多份采集（不同 `collection_id`、同一次启动）在统一时间轴上的对齐与去重规则。
-5. Journal 时间戳（`__REALTIME_TIMESTAMP`、`__MONOTONIC_TIMESTAMP`）到模型时间字段的换算细则。
-
-在上述规则定稿前，读取方必须把时间字段当作「同一 boot 内可排序的纳秒读数」，不得自行做跨 boot
-的挂钟比较。
+| 待定内容 | 定稿位置 |
+| --- | --- |
+| 1. `clock_domain` 的完整取值集合，以及 `boot_monotonic` 与 `wall_realtime` 的换算与漂移处理规则 | `docs/time-base.md` 第 2 节、第 4 节 |
+| 2. `monotonic_ns` 的零点定义（内核启动时刻还是采集开始时刻）以及跨 boot 比较的允许方式 | `docs/time-base.md` 第 3 节 |
+| 3. `Span` 的开放区间（`end_*_ns` 为 `null`）在时间线上的收尾规则 | `docs/time-base.md` 第 6 节 |
+| 4. 多份采集（不同 `collection_id`、同一次启动）在统一时间轴上的对齐与去重规则 | `docs/time-base.md` 第 7 节 |
+| 5. Journal 时间戳（`__REALTIME_TIMESTAMP`、`__MONOTONIC_TIMESTAMP`）到模型时间字段的换算细则 | `docs/time-base.md` 第 5 节 |
