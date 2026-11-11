@@ -10,12 +10,15 @@ API 进程与 Worker 进程都调用 ``register_builtins``，不允许在任意�
 """
 
 from system_analyzer.importers.bootrec_importer import BootrecImporter
+from system_analyzer.importers.journal_archive_importer import JournalArchiveImporter
 from system_analyzer.plugins.contracts import Plugin
 from system_analyzer.plugins.registry import PluginRegistry, get_registry
 
 BUILTIN_PLUGINS: tuple[Plugin, ...] = (
     # 1.3：bootrec v1 导入。新增插件追加在后面，不重排已有内容。
     BootrecImporter(),
+    # 1.4：Journal 压缩包导入。
+    JournalArchiveImporter(),
 )
 """内置插件清单。
 
