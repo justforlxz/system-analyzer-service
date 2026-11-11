@@ -9,6 +9,7 @@
 API 进程与 Worker 进程都调用 ``register_builtins``，不允许在任意一侧另写一份清单。
 """
 
+from system_analyzer.analyzers.oom import OomAnalyzer
 from system_analyzer.importers.bootrec_importer import BootrecImporter
 from system_analyzer.importers.journal_archive_importer import JournalArchiveImporter
 from system_analyzer.plugins.contracts import Plugin
@@ -19,6 +20,8 @@ BUILTIN_PLUGINS: tuple[Plugin, ...] = (
     BootrecImporter(),
     # 1.4：Journal 压缩包导入。
     JournalArchiveImporter(),
+    # 2.2：OOM 与进程异常退出分析。
+    OomAnalyzer(),
 )
 """内置插件清单。
 
