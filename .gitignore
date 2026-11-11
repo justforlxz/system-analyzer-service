@@ -1,0 +1,33 @@
+# 通用
+.DS_Store
+*.log
+
+# 环境变量与凭据：只提交 .env.example
+.env
+.env.*
+!.env.example
+backend/.env
+frontend/.env.local
+
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+backend/dist/
+backend/build/
+.coverage
+
+# 后端导出的 OpenAPI 文档：由命令生成，不入仓库
+backend/openapi.json
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+playwright-report/
+test-results/
