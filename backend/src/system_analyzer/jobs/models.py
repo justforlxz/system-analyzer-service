@@ -7,6 +7,12 @@
 
 from enum import StrEnum
 
+SOURCE_IMPORT_JOB_KIND = "import.source"
+"""导入任务的类型名。
+
+API 提交导入时写入这个类型，Worker 按它分发到 ``worker.import_jobs`` 里的处理器。
+"""
+
 
 class JobStatus(StrEnum):
     """后台任务状态，与 ``jobs.status`` 列的取值一一对应。"""

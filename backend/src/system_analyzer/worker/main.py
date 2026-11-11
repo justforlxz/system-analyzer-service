@@ -7,16 +7,17 @@ from system_analyzer.core.config import Settings, get_settings
 from system_analyzer.core.db import create_engine
 from system_analyzer.jobs.queue import JobQueue
 from system_analyzer.plugins.builtins import register_builtins
+from system_analyzer.worker.import_jobs import import_handlers
 from system_analyzer.worker.runner import JobHandler, Worker
 
 
 def default_handlers() -> dict[str, JobHandler]:
     """当前注册的任务处理器。
 
-    采集、导入与分析任务由任务 1.3、1.4、2.1、2.2、3.x 逐步加入；
-    本骨架阶段没有任务类型，Worker 启动后只会空转轮询。
+    导入任务（``import.source``）在这里注册，实现在 ``worker/import_jobs.py``；
+    采集与分析任务由任务 3.x、2.x 逐步加入。
     """
-    return {}
+    return import_handlers()
 
 
 async def run_worker(settings: Settings) -> None:

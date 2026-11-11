@@ -6,6 +6,7 @@
 """
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -28,6 +29,35 @@ class Job:
     kind: str
     payload: dict[str, Any]
     attempts: int
+
+
+@dataclass(frozen=True, slots=True)
+class JobRecord:
+    """按任务 id 读回的一条任务记录，供任务状态查询使用。
+
+    只读：``payload`` 是提交任务时写入的内容，任务执行方可以用 ``record_result`` 往里补
+    一段 ``result``；状态查询只暴露其中约定的字段，不把整个 payload 交给调用方。
+    """
+
+    id: UUID
+    kind: str
+    payload: dict[str, Any]
+    status: JobStatus
+    attempts: int
+    max_attempts: int
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class JobResultStore(Protocol):
+    """任务执行方补充任务结果的入口，是 ``JobQueue`` 的一个子集。
+
+    单独成一个协议，是为了让任务处理器只依赖「把结果写回任务」这一个能力，
+    不必持有完整的队列。
+    """
+
+    async def record_result(self, job_id: UUID, result: Mapping[str, Any]) -> None: ...
 
 
 class JobQueueLike(Protocol):
@@ -189,3 +219,60 @@ class JobQueue:
                 },
             )
         return next_status
+
+    async def get(self, job_id: UUID) -> JobRecord | None:
+        """按任务 id 读回一条任务记录；任务不存在时返回 ``None``。
+
+        只读一条，不锁行，不改状态：查询任务状态的地方（API）用它。
+        """
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT id, kind, payload, status, attempts, max_attempts,
+                               last_error, created_at, updated_at
+                          FROM jobs
+                         WHERE id = :job_id
+                        """
+                    ),
+                    {"job_id": job_id},
+                )
+            ).one_or_none()
+        if row is None:
+            return None
+        return JobRecord(
+            id=row.id,
+            kind=row.kind,
+            payload=row.payload,
+            status=JobStatus(row.status),
+            attempts=row.attempts,
+            max_attempts=row.max_attempts,
+            last_error=row.last_error,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    async def record_result(self, job_id: UUID, result: Mapping[str, Any]) -> None:
+        """把任务结果写回任务行的 ``payload.result``，不改变任务状态。
+
+        结果与状态分开写：任务成不成功由 ``complete`` / ``fail`` 决定，结果只是执行方记录的
+        产物（例如导入写了哪次采集）。只按任务 id 定位，任务行不存在时什么都不写。
+        """
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                text(
+                    """
+                    UPDATE jobs
+                       SET payload = jsonb_set(
+                               payload,
+                               '{result}',
+                               CAST(:result AS jsonb),
+                               true
+                           ),
+                           updated_at = now()
+                     WHERE id = :job_id
+                    """
+                ),
+                {"job_id": job_id, "result": json.dumps(result, ensure_ascii=False)},
+            )

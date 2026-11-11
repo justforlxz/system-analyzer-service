@@ -4,6 +4,57 @@
  */
 
 export interface paths {
+    "/api/collections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 采集记录列表 */
+        get: operations["list_collections_api_collections_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/collections/{collection_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 采集详情 */
+        get: operations["read_collection_api_collections__collection_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/collections/{collection_id}/records": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 一次采集里的记录 */
+        get: operations["list_collection_records_api_collections__collection_id__records_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -24,16 +75,629 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 上传文件并提交导入任务 */
+        post: operations["submit_import_api_imports_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/imports/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 导入任务状态与它写回的采集 */
+        get: operations["read_import_status_api_imports__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/machines/{machine_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 机器详情 */
+        get: operations["read_machine_api_machines__machine_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/machines/{machine_id}/boots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 一台机器的启动记录 */
+        get: operations["list_machine_boots_api_machines__machine_id__boots_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/machines/{machine_id}/boots/{boot_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 启动详情 */
+        get: operations["read_boot_api_machines__machine_id__boots__boot_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/machines/{machine_id}/boots/{boot_id}/timeline/cursor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 统一时间游标 */
+        get: operations["read_cursor_api_machines__machine_id__boots__boot_id__timeline_cursor_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/machines/{machine_id}/boots/{boot_id}/timeline/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 指定时刻的轨道状态 */
+        get: operations["read_state_api_machines__machine_id__boots__boot_id__timeline_state_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/machines/{machine_id}/boots/{boot_id}/timeline/tracks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 时间范围里的轨道与条目 */
+        get: operations["read_tracks_api_machines__machine_id__boots__boot_id__timeline_tracks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** Body_submit_import_api_imports_post */
+        Body_submit_import_api_imports_post: {
+            /**
+             * File
+             * @description 待导入的文件：.bootrec 容器或 Journal 归档
+             */
+            file: string;
+            /**
+             * Plugin Id
+             * @description 导入插件 id；不传则按文件内容自动识别（bootrec.importer / journal.archive）
+             */
+            plugin_id?: string | null;
+        };
+        /** BootResponse */
+        BootResponse: {
+            /** Boot Id */
+            boot_id: string;
+            /** Boot Index */
+            boot_index: number | null;
+            /** Kernel Version */
+            kernel_version: string | null;
+            /** Machine Id */
+            machine_id: string;
+            /** Started Realtime Ns */
+            started_realtime_ns: number | null;
+        };
+        /**
+         * ClockDomain
+         * @description ``monotonic_ns`` 所在的时间域。取值与判定规则见 ``docs/time-base.md`` 第 2 节。
+         * @enum {string}
+         */
+        ClockDomain: "boot_monotonic" | "wall_realtime";
+        /** ClockDriftResponse */
+        ClockDriftResponse: {
+            /** Anchor Count */
+            anchor_count: number;
+            /** Anchor Ns */
+            anchor_ns: number | null;
+            /** Drift Ns */
+            drift_ns: number | null;
+            /** Unreliable */
+            unreliable: boolean;
+        };
+        /**
+         * CollectionMode
+         * @description 一次采集的来源。
+         * @enum {string}
+         */
+        CollectionMode: "ssh_collection" | "journal_import" | "bootrec_import";
+        /** CollectionResponse */
+        CollectionResponse: {
+            /** Boot Id */
+            boot_id: string;
+            /** Collection Id */
+            collection_id: string;
+            /** Created Realtime Ns */
+            created_realtime_ns: number | null;
+            /** Import Error */
+            import_error: string | null;
+            import_status: components["schemas"]["ImportStatus"];
+            /** Machine Id */
+            machine_id: string;
+            mode: components["schemas"]["CollectionMode"];
+            /** Resources Available */
+            resources_available: boolean | null;
+            /** Resources Reason */
+            resources_reason: string | null;
+            /** Source Sha256 */
+            source_sha256: string | null;
+        };
+        /** CursorResponse */
+        CursorResponse: {
+            /** Boot Id */
+            boot_id: string;
+            /** End Ns */
+            end_ns: number | null;
+            /** Machine Id */
+            machine_id: string;
+            /** Next Ns */
+            next_ns: number | null;
+            /** Position Ns */
+            position_ns: number | null;
+            /** Previous Ns */
+            previous_ns: number | null;
+            /** Start Ns */
+            start_ns: number | null;
+        };
+        /** EventItemResponse */
+        EventItemResponse: {
+            /** Attributes */
+            attributes: {
+                [key: string]: unknown;
+            };
+            /** Collection Id */
+            collection_id: string;
+            /** Entity */
+            entity: string | null;
+            /** Event Type */
+            event_type: string;
+            /** Message */
+            message: string | null;
+            /** Monotonic Ns */
+            monotonic_ns: number | null;
+            /** Realtime Ns */
+            realtime_ns: number | null;
+            /** Record Id */
+            record_id: string;
+            /** Severity */
+            severity: string;
+            /** Source Plugin */
+            source_plugin: string;
+            /** Stream Id */
+            stream_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "event";
+        };
+        /** HTTPValidationError */
+        HTTPValidationError: {
+            /** Detail */
+            detail?: components["schemas"]["ValidationError"][];
+        };
         /** HealthResponse */
         HealthResponse: {
             /** Status */
             status: string;
             /** Version */
             version: string;
+        };
+        /**
+         * ImportJobFailure
+         * @description 任务失败的分类与对外说明。
+         *
+         *     只给稳定的分类与一句面向调用方的说明；异常类型、堆栈与文件路径只写进 Worker 日志。
+         */
+        ImportJobFailure: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "invalid_input" | "internal";
+            /** Message */
+            message: string;
+        };
+        /**
+         * ImportJobResult
+         * @description 导入任务写回的结果。字段缺失表示插件没有报告这一项。
+         */
+        ImportJobResult: {
+            /** Collection Id */
+            collection_id?: string | null;
+            /** Import Status */
+            import_status?: string | null;
+            /** Records Skipped */
+            records_skipped?: number | null;
+            /** Records Written */
+            records_written?: number | null;
+            /** Skipped Reason */
+            skipped_reason?: string | null;
+        };
+        /** ImportJobStatus */
+        ImportJobStatus: {
+            /** Attempts */
+            attempts: number;
+            /** @description 任务失败时的分类与说明，成功或执行中为 null */
+            failure: components["schemas"]["ImportJobFailure"] | null;
+            /** Filename */
+            filename: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Max Attempts */
+            max_attempts: number;
+            /** Plugin Id */
+            plugin_id: string | null;
+            result: components["schemas"]["ImportJobResult"] | null;
+            status: components["schemas"]["JobStatus"];
+            /** Upload Id */
+            upload_id: string | null;
+        };
+        /**
+         * ImportStatus
+         * @description Collection 级导入状态，与 ``collections.import_status`` 列的取值一一对应。
+         *
+         *     - ``pending``：这次采集已知，但还没有开始导入。
+         *     - ``importing``：正在写入实体与记录。
+         *     - ``imported``：数据已完整写入。
+         *     - ``failed``：导入失败，``import_error`` 写明原因；可以重试。
+         * @enum {string}
+         */
+        ImportStatus: "pending" | "importing" | "imported" | "failed";
+        /** ImportStatusResponse */
+        ImportStatusResponse: {
+            /** @description 导入成功后对应的采集；任务还没写出结果时为 null */
+            collection: components["schemas"]["CollectionResponse"] | null;
+            job: components["schemas"]["ImportJobStatus"];
+        };
+        /**
+         * ImportSubmitResponse
+         * @description 一次导入提交的结果：文件已经写入上传目录、任务已经入队。
+         */
+        ImportSubmitResponse: {
+            /** Filename */
+            filename: string | null;
+            /** Job Id */
+            job_id: string;
+            /** Plugin Id */
+            plugin_id: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Source Sha256 */
+            source_sha256: string;
+            /** Upload Id */
+            upload_id: string;
+        };
+        /**
+         * JobStatus
+         * @description 后台任务状态，与 ``jobs.status`` 列的取值一一对应。
+         * @enum {string}
+         */
+        JobStatus: "queued" | "running" | "succeeded" | "failed";
+        /** MachineResponse */
+        MachineResponse: {
+            /** Architecture */
+            architecture: string | null;
+            /** Hostname */
+            hostname: string;
+            /** Kernel Version */
+            kernel_version: string | null;
+            /** Machine Id */
+            machine_id: string;
+            /** Os Release */
+            os_release: string | null;
+        };
+        /** MetricItemResponse */
+        MetricItemResponse: {
+            /** Collection Id */
+            collection_id: string;
+            /** Entity */
+            entity: string | null;
+            /** Monotonic Ns */
+            monotonic_ns: number | null;
+            /** Name */
+            name: string;
+            /** Realtime Ns */
+            realtime_ns: number | null;
+            /** Record Id */
+            record_id: string;
+            /** Source Plugin */
+            source_plugin: string;
+            /** Stream Id */
+            stream_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "metric";
+            /** Unit */
+            unit: string;
+            /** Value */
+            value: number;
+        };
+        /** Page[BootResponse] */
+        Page_BootResponse_: {
+            /** Items */
+            items: components["schemas"]["BootResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total */
+            total: number;
+        };
+        /** Page[CollectionResponse] */
+        Page_CollectionResponse_: {
+            /** Items */
+            items: components["schemas"]["CollectionResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total */
+            total: number;
+        };
+        /**
+         * RecordKind
+         * @description 统一记录的六种数据对象。
+         * @enum {string}
+         */
+        RecordKind: "event" | "span" | "metric" | "profile" | "annotation" | "artifact";
+        /** RecordResponse */
+        RecordResponse: {
+            /** Boot Id */
+            boot_id: string;
+            clock_domain: components["schemas"]["ClockDomain"];
+            /** Collection Id */
+            collection_id: string;
+            /** Entity */
+            entity: string | null;
+            kind: components["schemas"]["RecordKind"];
+            /** Machine Id */
+            machine_id: string;
+            /** Monotonic Ns */
+            monotonic_ns: number | null;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Realtime Ns */
+            realtime_ns: number | null;
+            /** Record Id */
+            record_id: string;
+            /** Source Plugin */
+            source_plugin: string;
+            /** Stream Id */
+            stream_id: string;
+        };
+        /**
+         * RecordsPage
+         * @description 一次采集里的记录页。
+         *
+         *     ``collection_total`` 是这次采集的记录总数，**不受**时间范围与 ``kinds`` 筛选影响：
+         *     存储层没有按筛选条件计数的接口，与其给一个算不准的「筛选后总数」，不如把口径写清楚。
+         */
+        RecordsPage: {
+            /** Collection Total */
+            collection_total: number;
+            /** Items */
+            items: components["schemas"]["RecordResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /** ResourceStatusResponse */
+        ResourceStatusResponse: {
+            /** Available */
+            available: boolean | null;
+            /** Reasons */
+            reasons: string[];
+        };
+        /** SpanItemResponse */
+        SpanItemResponse: {
+            /** Attributes */
+            attributes: {
+                [key: string]: unknown;
+            };
+            /** Closed By */
+            closed_by: string | null;
+            /** Collection Id */
+            collection_id: string;
+            /** End Is Declared */
+            end_is_declared: boolean;
+            /** End Monotonic Ns */
+            end_monotonic_ns: number | null;
+            /** End Realtime Ns */
+            end_realtime_ns: number | null;
+            /** Entity */
+            entity: string | null;
+            /** Monotonic Ns */
+            monotonic_ns: number | null;
+            /** Realtime Ns */
+            realtime_ns: number | null;
+            /** Record Id */
+            record_id: string;
+            /** Source Plugin */
+            source_plugin: string;
+            /** Span Type */
+            span_type: string;
+            /** State */
+            state: string | null;
+            /** Stream Id */
+            stream_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "span";
+        };
+        /** TimelineStateResponse */
+        TimelineStateResponse: {
+            /** Boot Id */
+            boot_id: string;
+            clock: components["schemas"]["ClockDriftResponse"];
+            /** Machine Id */
+            machine_id: string;
+            /** Monotonic Ns */
+            monotonic_ns: number;
+            resources: components["schemas"]["ResourceStatusResponse"];
+            /** Tracks */
+            tracks: components["schemas"]["TrackStateResponse"][];
+        };
+        /** TrackResponse */
+        TrackResponse: {
+            /** Entity */
+            entity: string | null;
+            /** Items */
+            items: (components["schemas"]["EventItemResponse"] | components["schemas"]["SpanItemResponse"] | components["schemas"]["MetricItemResponse"])[];
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "event" | "span" | "metric";
+            /** Name */
+            name: string | null;
+            /** Source Plugin */
+            source_plugin: string | null;
+            status: components["schemas"]["TrackStatus"];
+            /** Stream Id */
+            stream_id: string | null;
+            /** Track Id */
+            track_id: string;
+            /**
+             * Unavailable Reason
+             * @description 仅当 status 为 unavailable 时有值：这条流没有数据的原因
+             */
+            unavailable_reason: string | null;
+            /** Unit */
+            unit: string | null;
+        };
+        /** TrackStateResponse */
+        TrackStateResponse: {
+            /** Entity */
+            entity: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "event" | "span" | "metric";
+            last_event: components["schemas"]["EventItemResponse"] | null;
+            metric: components["schemas"]["MetricItemResponse"] | null;
+            /** Spans */
+            spans: components["schemas"]["SpanItemResponse"][];
+            status: components["schemas"]["TrackStatus"];
+            /** Track Id */
+            track_id: string;
+            /** Unavailable Reason */
+            unavailable_reason: string | null;
+        };
+        /**
+         * TrackStatus
+         * @description 一条轨道的数据可用性。三种状态互斥，含义见 ``docs/timeline-query.md``。
+         * @enum {string}
+         */
+        TrackStatus: "available" | "unavailable" | "no_data";
+        /** TracksResponse */
+        TracksResponse: {
+            /** Axis End Ns */
+            axis_end_ns: number | null;
+            /** Axis Start Ns */
+            axis_start_ns: number | null;
+            /** Boot Id */
+            boot_id: string;
+            clock: components["schemas"]["ClockDriftResponse"];
+            /** Items */
+            items: (components["schemas"]["EventItemResponse"] | components["schemas"]["SpanItemResponse"] | components["schemas"]["MetricItemResponse"])[];
+            /** Machine Id */
+            machine_id: string;
+            resources: components["schemas"]["ResourceStatusResponse"];
+            /** Tracks */
+            tracks: components["schemas"]["TrackResponse"][];
+            /** Wall Clock Items */
+            wall_clock_items: (components["schemas"]["EventItemResponse"] | components["schemas"]["SpanItemResponse"] | components["schemas"]["MetricItemResponse"])[];
+            /** Window End Ns */
+            window_end_ns: number | null;
+            /** Window Start Ns */
+            window_start_ns: number | null;
+        };
+        /** ValidationError */
+        ValidationError: {
+            /** Context */
+            ctx?: Record<string, never>;
+            /** Input */
+            input?: unknown;
+            /** Location */
+            loc: (string | number)[];
+            /** Message */
+            msg: string;
+            /** Error Type */
+            type: string;
         };
     };
     responses: never;
@@ -44,6 +708,121 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_collections_api_collections_get: {
+        parameters: {
+            query?: {
+                /** @description 只看这台机器 */
+                machine_id?: string | null;
+                /** @description 只看这次启动 */
+                boot_id?: string | null;
+                /** @description 只看这个导入状态 */
+                status?: components["schemas"]["ImportStatus"] | null;
+                /** @description 每页条数，1..200 */
+                limit?: number;
+                /** @description 跳过的条数，0..100000 */
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_CollectionResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_collection_api_collections__collection_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                collection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_collection_records_api_collections__collection_id__records_get: {
+        parameters: {
+            query?: {
+                /** @description 按哪个时钟域排序与筛选；两种时钟域的零点不同，不能混排 */
+                clock_domain?: components["schemas"]["ClockDomain"];
+                /** @description 逗号分隔的记录种类，例如 event,metric；不传表示全部 */
+                kinds?: string | null;
+                /** @description 起始时刻（含），单位纳秒 */
+                start_ns?: number | null;
+                /** @description 结束时刻（含），单位纳秒 */
+                end_ns?: number | null;
+                /** @description 每页条数，1..200 */
+                limit?: number;
+                /** @description 跳过的条数，0..100000 */
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                collection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_health_api_health_get: {
         parameters: {
             query?: never;
@@ -60,6 +839,280 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    submit_import_api_imports_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_submit_import_api_imports_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportSubmitResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_import_status_api_imports__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_machine_api_machines__machine_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                machine_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MachineResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_machine_boots_api_machines__machine_id__boots_get: {
+        parameters: {
+            query?: {
+                /** @description 每页条数，1..200 */
+                limit?: number;
+                /** @description 跳过的条数，0..100000 */
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                machine_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_BootResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_boot_api_machines__machine_id__boots__boot_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                machine_id: string;
+                boot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BootResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_cursor_api_machines__machine_id__boots__boot_id__timeline_cursor_get: {
+        parameters: {
+            query?: {
+                /** @description 游标位置；不传停在轴起点 */
+                at_ns?: number | null;
+                /** @description 给出布尔值时先按 at_ns 定位，再挪到前（false）或后（true）一个可停靠时刻 */
+                forward?: boolean | null;
+            };
+            header?: never;
+            path: {
+                machine_id: string;
+                boot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_state_api_machines__machine_id__boots__boot_id__timeline_state_get: {
+        parameters: {
+            query: {
+                /** @description boot 内时刻，单位纳秒 */
+                monotonic_ns: number;
+            };
+            header?: never;
+            path: {
+                machine_id: string;
+                boot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimelineStateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_tracks_api_machines__machine_id__boots__boot_id__timeline_tracks_get: {
+        parameters: {
+            query?: {
+                /** @description 逗号分隔的记录种类，只能取 event、span、metric；不传表示全部 */
+                kinds?: string | null;
+                /** @description 起始时刻（含），单位纳秒 */
+                start_ns?: number | null;
+                /** @description 结束时刻（含），单位纳秒 */
+                end_ns?: number | null;
+            };
+            header?: never;
+            path: {
+                machine_id: string;
+                boot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TracksResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

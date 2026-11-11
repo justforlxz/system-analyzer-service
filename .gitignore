@@ -23,6 +23,9 @@ backend/build/
 # 后端导出的 OpenAPI 文档：由命令生成，不入仓库
 backend/openapi.json
 
+# 导入接口的上传目录（默认配置 SAS_UPLOAD_DIR=var/uploads）
+backend/var/
+
 # Node / Next.js
 node_modules/
 .next/
