@@ -37,6 +37,7 @@ from system_analyzer.plugins.contracts import (
     ImportResult,
     ImportSource,
     PluginContext,
+    PluginExecutionError,
     PluginInputError,
     PluginKind,
 )
@@ -53,12 +54,15 @@ REALTIME_MICROS = 1794367420210127
 
 
 class RecordingStore:
-    """记录插件写了什么的数据入口：形状与存储层的整份写入入口一致，不碰数据库。"""
+    """记录插件写了什么的数据入口：形状与 1.3 的同步协议一致，不碰数据库。"""
 
     def __init__(self) -> None:
         self.calls: list[tuple[Any, Any, Any, str | None, Any]] = []
 
-    async def import_collection(
+    def get_collection(self, collection_id: str) -> None:
+        return None
+
+    def import_collection(
         self,
         collection: Any,
         entities: Sequence[Any],
@@ -445,10 +449,9 @@ def test_gzipped_export_text_is_parsed(tmp_path: Path) -> None:
 
 
 def test_plugin_declares_a_working_importer_manifest() -> None:
-    """``isinstance`` 只查属性是否存在，查不出签名差异；入口是 async 是一条已上报的偏差。
+    """``docs/plugin-contracts.md`` 第 3.3 节：``detect`` 与 ``import_source`` 都是同步方法。
 
-    见 ``docs/journal-archive-import.md`` 偏差清单第 1 条：契约 3.3 节写的是同步签名，这里显式
-    断言「现在是异步」，让偏差在代码里可见，而不是被一个名字夸大的用例盖住。
+    ``isinstance`` 只查属性是否存在、查不出签名差异，所以这里显式断言两个入口都不是协程函数。
     """
     plugin = JournalArchiveImporter()
 
@@ -456,7 +459,8 @@ def test_plugin_declares_a_working_importer_manifest() -> None:
     assert plugin.spec.kind is PluginKind.IMPORTER
     assert plugin.spec.capabilities == (archive.CAPABILITY,)
     assert plugin.detect(ImportSource(path=EXPORT_FIXTURE)) is True
-    assert inspect.iscoroutinefunction(plugin.import_source)
+    assert inspect.iscoroutinefunction(plugin.detect) is False
+    assert inspect.iscoroutinefunction(plugin.import_source) is False
 
 
 def test_plugin_is_registered_as_a_builtin_importer() -> None:
@@ -470,12 +474,12 @@ def test_plugin_is_registered_as_a_builtin_importer() -> None:
     ]
 
 
-async def test_import_source_writes_the_bundle_through_the_data_entry() -> None:
+def test_import_source_writes_the_bundle_through_the_data_entry() -> None:
     plugin = JournalArchiveImporter()
     data = RecordingStore()
     context = PluginContext(plugin_id=plugin.spec.id, data=data, run_id="run-1")
 
-    result = await plugin.import_source(ImportSource(path=EXPORT_FIXTURE), context)
+    result = plugin.import_source(ImportSource(path=EXPORT_FIXTURE), context)
 
     assert isinstance(result, ImportResult)
     assert result.records_written == 4
@@ -492,22 +496,22 @@ async def test_import_source_writes_the_bundle_through_the_data_entry() -> None:
     assert resources.available is False
 
 
-async def test_import_source_rejects_a_source_it_does_not_recognise(tmp_path: Path) -> None:
+def test_import_source_rejects_a_source_it_does_not_recognise(tmp_path: Path) -> None:
     plugin = JournalArchiveImporter()
     path = write(tmp_path, "notes.txt", b"hello\n")
 
     with pytest.raises(PluginInputError, match="不认这个来源"):
-        await plugin.import_source(
+        plugin.import_source(
             ImportSource(path=path),
             PluginContext(plugin_id=plugin.spec.id, data=RecordingStore()),
         )
 
 
-async def test_import_source_requires_a_collection_writing_data_entry() -> None:
+def test_import_source_requires_a_collection_writing_data_entry() -> None:
     plugin = JournalArchiveImporter()
 
     with pytest.raises(PluginInputError, match="import_collection"):
-        await plugin.import_source(
+        plugin.import_source(
             ImportSource(path=EXPORT_FIXTURE),
             PluginContext(plugin_id=plugin.spec.id, data=AccessWithoutImport()),
         )
@@ -609,12 +613,12 @@ def test_the_native_fixture_needs_a_limit_above_its_expanded_size() -> None:
 
 
 @pytest.mark.parametrize("limit", [0, -1, True, "1024"])
-async def test_plugin_rejects_an_invalid_limit(limit: Any) -> None:
+def test_plugin_rejects_an_invalid_limit(limit: Any) -> None:
     """直接构造 ``PluginContext`` 时不过 Core 的校验，插件自己也要挡住非法上限。"""
     plugin = JournalArchiveImporter()
 
     with pytest.raises(PluginInputError, match="必须是正整数"):
-        await plugin.import_source(
+        plugin.import_source(
             ImportSource(path=EXPORT_FIXTURE),
             PluginContext(
                 plugin_id=plugin.spec.id,
@@ -624,12 +628,12 @@ async def test_plugin_rejects_an_invalid_limit(limit: Any) -> None:
         )
 
 
-async def test_plugin_applies_the_configured_limit(tmp_path: Path) -> None:
+def test_plugin_applies_the_configured_limit(tmp_path: Path) -> None:
     plugin = JournalArchiveImporter()
     path = write(tmp_path, "big.export.gz", gzip.compress(big_export(50_000)))
 
     with pytest.raises(PluginInputError, match="超过上限"):
-        await plugin.import_source(
+        plugin.import_source(
             ImportSource(path=path),
             PluginContext(
                 plugin_id=plugin.spec.id,
@@ -638,7 +642,7 @@ async def test_plugin_applies_the_configured_limit(tmp_path: Path) -> None:
             ),
         )
 
-    result = await plugin.import_source(
+    result = plugin.import_source(
         ImportSource(path=path),
         PluginContext(
             plugin_id=plugin.spec.id,
@@ -728,7 +732,7 @@ def test_truncated_export_text_is_rejected(tmp_path: Path) -> None:
         archive.parse_journal_archive(path)
 
 
-async def test_plugin_rejects_a_truncated_export_without_writing(tmp_path: Path) -> None:
+def test_plugin_rejects_a_truncated_export_without_writing(tmp_path: Path) -> None:
     """走插件的路径同样拒绝，而且一条记录都没写（不留半份数据）。"""
     data = EXPORT_FIXTURE.read_bytes()
     cut = data.index(b"MESSAGE=Out of memory: ") + len(b"MESSAGE=Out of memory: ") + 15
@@ -737,7 +741,7 @@ async def test_plugin_rejects_a_truncated_export_without_writing(tmp_path: Path)
     plugin = JournalArchiveImporter()
 
     with pytest.raises(PluginInputError, match="导出文本不完整"):
-        await plugin.import_source(
+        plugin.import_source(
             ImportSource(path=path),
             PluginContext(plugin_id=plugin.spec.id, data=data_access),
         )
@@ -773,3 +777,71 @@ def test_monotonic_only_entry_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(PluginInputError, match="__REALTIME_TIMESTAMP"):
         archive.build_bundle(archive.parse_journal_archive(path), source_sha256="0" * 64)
+
+
+# --- 契约要求的调用形状：同步入口、经 registry.invoke 拿到 ImportResult、异常被收敛 ----------
+
+
+class FailingAccess:
+    """存储层故障的替身：写库时抛出一个非 ``PluginError`` 的异常。"""
+
+    def get_collection(self, collection_id: str) -> None:
+        return None
+
+    def import_collection(self, *args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("QA 注入的存储层缺陷")
+
+
+class AsyncAccess:
+    """错配的数据入口：方法返回协程，而不是结果。"""
+
+    async def get_collection(self, collection_id: str) -> None:
+        return None
+
+    async def import_collection(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def test_registry_invoke_returns_the_import_result() -> None:
+    """契约 §4 的唯一调用入口直接拿到 ImportResult，而不是协程。"""
+    registry = register_builtins(PluginRegistry())
+    data = RecordingStore()
+
+    result = registry.invoke(
+        archive.PLUGIN_ID,
+        lambda plugin, context: plugin.import_source(ImportSource(path=EXPORT_FIXTURE), context),
+        data=data,
+    )
+
+    assert isinstance(result, ImportResult)
+    assert result.records_written == 4
+    assert len(data.calls) == 1
+
+
+def test_storage_failure_is_wrapped_by_the_plugin_boundary() -> None:
+    """插件抛出的非 ``PluginError`` 异常在 ``invoke`` 边界被包成 ``PluginExecutionError``。"""
+    registry = register_builtins(PluginRegistry())
+
+    with pytest.raises(PluginExecutionError) as wrapped:
+        registry.invoke(
+            archive.PLUGIN_ID,
+            lambda plugin, context: plugin.import_source(
+                ImportSource(path=EXPORT_FIXTURE), context
+            ),
+            data=FailingAccess(),
+        )
+
+    assert isinstance(wrapped.value.cause, RuntimeError)
+    assert "QA 注入的存储层缺陷" in str(wrapped.value.cause)
+
+
+def test_an_async_data_access_is_rejected_with_a_readable_reason() -> None:
+    """数据入口返回协程时明确失败，而不是「成功」返回一个没导入任何东西的协程。"""
+    plugin = JournalArchiveImporter()
+    context = PluginContext(plugin_id=plugin.spec.id, data=AsyncAccess())
+
+    with pytest.raises(PluginInputError) as rejected:
+        plugin.import_source(ImportSource(path=EXPORT_FIXTURE), context)
+
+    assert "协程" in str(rejected.value)
+    assert "context.data" in str(rejected.value)

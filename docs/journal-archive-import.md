@@ -68,8 +68,17 @@ zstd 压缩的外层容器与 zstd / lz4 压缩的字段**不支持**：仓库�
 2. **解析与写入**：`parse_journal_archive()` 得到 Journal 原始字段，`build_bundle()` 归一化成
    一条采集、若干实体和若干 `event` 记录，`DiagnosticStore.import_collection()` 在**一个事务**里
    写入并推进导入状态。插件入口 `JournalArchiveImporter.import_source()` 就是第 2 步的插件形态：
-   它是 `async` 方法，通过 `context.data` 调同一个整份写入入口，自己不碰数据库；体积上限取自
+   **同步方法**（`docs/plugin-contracts.md` 第 3.3 节），经 `PluginRegistry.invoke` 直接拿到
+   `ImportResult`，通过 `context.data` 调同一个整份写入入口，自己不碰数据库；体积上限取自
    `context.config` 的 `max_decompressed_bytes`（不填就是 512 MiB，见第 1.1 节）。
+
+数据入口 `context.data` 必须是**同步的**：插件复用 1.3 已定下的协议
+`importers.bootrec_importer.CollectionImportAccess`（`get_collection` 与 `import_collection` 两个
+同步方法）。`DiagnosticStore` 的方法是协程，因此 Core 要把它包成同步入口后交给插件——`Worker` 的
+接线属于 1.6；本任务的集成测试里有一份参考实现（`tests/integration/test_journal_archive_import.py`
+的 `SyncStoreAccess`：每次调用在一条短命事件循环里跑一次存储层协程，`NullPool` 保证连接不跨循环
+复用）。如果传进来的是异步入口，插件会明确报「返回了协程，导入需要同步入口」，而不是「成功」返回
+一个没导入任何东西的协程。
 
 下面的命令可直接复跑，用的是仓库里的样例 `backend/tests/fixtures/journal_archive/boot.journal.gz`
 （由 `systemd-journal-remote --compress=no` 从同目录的 `boot.export` 生成，是一份真实的 Journal
@@ -293,9 +302,7 @@ Journal 归档里没有 CPU、内存、磁盘采样，按 `docs/data-model.md` �
 
 | # | 偏差 | 原因 | 由谁闭环 |
 | --- | --- | --- | --- |
-| 1 | `import_source` 是 `async` 方法，契约第 3.3 节写的是同步签名 | 导入要等一次完整的 `import_collection` 事务，而 Worker 是异步进程。1.3 的 `BootrecImporter` 做了同样的改动 | 建议在 `docs/plugin-contracts.md` 第 3.3 节把 Importer 入口改成异步，交 PL 决定 |
-| 2 | 数据入口在 `PluginDataAccess`（`append_records` / `query_records`）之外要求 `import_collection`（`importers/journal_archive.py:CollectionImportAccess`） | 存储层要求记录的 `entity` 能在同一份采集里解析到、Machine 与 Boot 两行是写入前置条件（`storage/validation.py` 的 `entity_problems`、`_reference_problems`），三者还必须同一个事务写入。只写记录的入口装不下这些 | 1.3 已在 `importers/bootrec_importer.py` 声明同形的 `CollectionImportAccess`；两处应合并到公共位置，交 PL 决定放哪 |
-| 3 | `docs/bootrec-v1.md` 第 10 节说 1.4 的输出「必须是符合本文档的 `.bootrec`」，本实现直接把 `event` 记录写进存储，不生成 `.bootrec` | 按 PL 在 1.4 任务交接里定的口径：Journal 条目写成 `event` 记录、`source_sha256` 走现有列、不新增表 | PL 已在交接里确认，此处只做记录 |
-| 4 | `-o export` 的逐条扫描在本模块另写了一份（`iter_export_events`），`tools/journal_time.py` 里的 `parse_event` 只取第一条 | `tools/journal_time.py` 属于 0.3 的交付且本任务不允许改动；时间换算仍然只用它的 `journal_event_position`，二进制字段的长度头常量也从那里取，只有「切分多条事件」这一层是新的 | 若后续要给 `journal_time` 加多事件接口，可合并成一处 |
-| 5 | 逐条日志的 PID / Invocation ID 落在 `payload.attributes` 而不是实体 | 见第 4 节 | 无 |
-| 6 | 多启动选择「拒绝」而不是「拆分」 | 见第 8 节 | 若 1.6/1.5 需要自动拆分，需先有「一次上传产出多次采集」的契约 |
+| 1 | `docs/bootrec-v1.md` 第 10 节说 1.4 的输出「必须是符合本文档的 `.bootrec`」，本实现直接把 `event` 记录写进存储，不生成 `.bootrec` | 按 PL 在 1.4 任务交接里定的口径：Journal 条目写成 `event` 记录、`source_sha256` 走现有列、不新增表 | PL 已在交接里确认，此处只做记录 |
+| 2 | `-o export` 的逐条扫描在本模块另写了一份（`iter_export_events`），`tools/journal_time.py` 里的 `parse_event` 只取第一条 | `tools/journal_time.py` 属于 0.3 的交付且本任务不允许改动；时间换算仍然只用它的 `journal_event_position`，二进制字段的长度头常量也从那里取，只有「切分多条事件」这一层是新的 | 若后续要给 `journal_time` 加多事件接口，可合并成一处 |
+| 3 | 逐条日志的 PID / Invocation ID 落在 `payload.attributes` 而不是实体 | 见第 4 节 | 无 |
+| 4 | 多启动选择「拒绝」而不是「拆分」 | 见第 8 节 | 若 1.6/1.5 需要自动拆分，需先有「一次上传产出多次采集」的契约 |
