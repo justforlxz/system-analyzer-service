@@ -349,8 +349,9 @@ def test_plugin_satisfies_the_importer_contract() -> None:
 def test_plugin_is_registered_as_a_builtin() -> None:
     registry = register_builtins(PluginRegistry())
 
-    assert [plugin.spec.id for plugin in registry.by_kind(PluginKind.IMPORTER)] == [
-        "bootrec.importer"
+    # 内置清单是追加式的（1.4 的 journal.archive 与本插件并列），只断言本插件在其中
+    assert "bootrec.importer" in [
+        plugin.spec.id for plugin in registry.by_kind(PluginKind.IMPORTER)
     ]
     assert [plugin.spec.id for plugin in registry.by_capability("bootrec.v1")] == [
         "bootrec.importer"
