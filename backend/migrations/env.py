@@ -11,14 +11,15 @@ from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from system_analyzer.core.config import get_settings
+from system_analyzer.storage.models import Base
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# 现在还没有声明式模型（由任务 1.1 引入）。那个任务把 MetaData 接到这里之后，
-# ``alembic revision --autogenerate`` 才可用；在此之前只能手写修订。
-target_metadata = None
+# 声明式模型在 system_analyzer.storage.models，表结构与迁移在这里对照：
+# ``alembic revision --autogenerate`` 与 ``alembic check`` 都依赖这份 MetaData。
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
