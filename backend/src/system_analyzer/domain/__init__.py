@@ -4,5 +4,5 @@
 ``docs/data-model.md`` 与 ``docs/bootrec-v1.md``，可执行版本在 ``bootrec`` 模块。
 
 时间字段的语义（``monotonic_ns``、``realtime_ns``、``clock_domain`` 的取值与换算）由任务
-0.3 定稿，在 0.3 交付前按草稿执行，不在此处补充规则。
+0.3 定稿，规范见 ``docs/time-base.md``，可执行版本在 ``time_base`` 模块。
 """
