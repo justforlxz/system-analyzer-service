@@ -9,10 +9,14 @@
 API 进程与 Worker 进程都调用 ``register_builtins``，不允许在任意一侧另写一份清单。
 """
 
+from system_analyzer.importers.bootrec_importer import BootrecImporter
 from system_analyzer.plugins.contracts import Plugin
 from system_analyzer.plugins.registry import PluginRegistry, get_registry
 
-BUILTIN_PLUGINS: tuple[Plugin, ...] = ()
+BUILTIN_PLUGINS: tuple[Plugin, ...] = (
+    # 1.3：bootrec v1 导入。新增插件追加在后面，不重排已有内容。
+    BootrecImporter(),
+)
 """内置插件清单。
 
 插件对象是无状态的：配置与数据入口在每次调用时通过 ``PluginContext`` 传入，
