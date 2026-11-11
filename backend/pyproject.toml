@@ -10,6 +10,7 @@ dependencies = [
     "jsonschema>=4.23",
     "pydantic>=2.8.0",
     "pydantic-settings>=2.4.0",
+    "python-multipart>=0.0.9",
     "sqlalchemy[asyncio]>=2.0.32",
     "uvicorn[standard]>=0.30.0",
 ]
@@ -48,6 +49,19 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "parents"
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI 的依赖注入就是把 Depends / Query / File 这类调用写在默认参数上；
+# 它们不是「可变默认值」缺陷，按官方推荐声明为可接受的调用。
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Query",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -40,6 +40,22 @@ class Settings(BaseSettings):
         gt=0,
         description="任务锁超时时间，超时后任务可被其他 Worker 重新领取",
     )
+    upload_dir: str = Field(
+        min_length=1,
+        default="var/uploads",
+        description=(
+            "导入文件的上传目录。API 落文件、Worker 读文件，两个进程必须指向同一个路径；"
+            "相对路径按进程的工作目录解析"
+        ),
+    )
+    max_upload_bytes: int = Field(
+        default=512 * 1024 * 1024,
+        gt=0,
+        description=(
+            "单个上传文件的最大字节数，超过就整份拒绝并删除已写入的部分。"
+            "默认 512 MiB，与 Journal 归档解压前的体积上限一致"
+        ),
+    )
 
 
 @lru_cache
