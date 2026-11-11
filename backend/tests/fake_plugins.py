@@ -186,6 +186,108 @@ class ExplodingAnalyzer(PluginBase):
         raise RuntimeError("样例插件内部崩溃")
 
 
+class RecordingAnalyzer(PluginBase):
+    """把生命周期回调与入口方法的调用顺序记下来，供测试断言「谁在什么时候被调用一次」。
+
+    真实插件必须无跨调用的可变状态；这里记录调用是测试替身的用法，与 ``FakeDataAccess``
+    记录写入是同一种手段。
+    """
+
+    spec = PluginSpec(
+        id="sample.recording-analyzer",
+        kind=PluginKind.ANALYZER,
+        name="样例分析插件（记录调用）",
+        version="0.1.0",
+        api_version=PLUGIN_API_VERSION,
+        capabilities=("sample.annotations",),
+        config_schema={
+            "type": "object",
+            "properties": {"strict": {"type": "boolean"}},
+            "required": ["strict"],
+            "additionalProperties": False,
+        },
+    )
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, PluginContext]] = []
+
+    def on_load(self, context: PluginContext) -> None:
+        self.calls.append(("load", context))
+
+    def on_unload(self, context: PluginContext) -> None:
+        self.calls.append(("unload", context))
+
+    def analyze(self, request: AnalysisRequest, context: PluginContext) -> AnalysisResult:
+        self.calls.append(("analyze", context))
+        return AnalysisResult(annotations_written=1)
+
+    def called(self) -> list[str]:
+        """按发生顺序列出被调用过的方法名。"""
+        return [name for name, _ in self.calls]
+
+
+class ExplodingOnLoadAnalyzer(PluginBase):
+    """``on_load`` 就抛异常的假插件：证明加载失败被隔离，入口方法不会被调用。"""
+
+    spec = PluginSpec(
+        id="sample.exploding-on-load",
+        kind=PluginKind.ANALYZER,
+        name="样例分析插件（加载失败）",
+        version="0.1.0",
+        api_version=PLUGIN_API_VERSION,
+        capabilities=("sample.annotations",),
+    )
+
+    def __init__(self) -> None:
+        self.load_attempts = 0
+
+    def on_load(self, context: PluginContext) -> None:
+        self.load_attempts += 1
+        raise RuntimeError("样例插件加载失败")
+
+    def analyze(self, request: AnalysisRequest, context: PluginContext) -> AnalysisResult:
+        raise AssertionError("加载失败的插件不应被调用")
+
+
+class FailingUnloadAnalyzer(PluginBase):
+    """``on_unload`` 抛异常的假插件：证明一个插件卸载失败不阻止其它插件卸载。"""
+
+    spec = PluginSpec(
+        id="sample.failing-unload",
+        kind=PluginKind.ANALYZER,
+        name="样例分析插件（卸载失败）",
+        version="0.1.0",
+        api_version=PLUGIN_API_VERSION,
+        capabilities=("sample.annotations",),
+    )
+
+    def __init__(self) -> None:
+        self.unloaded = False
+
+    def on_unload(self, context: PluginContext) -> None:
+        self.unloaded = True
+        raise RuntimeError("样例插件卸载失败")
+
+    def analyze(self, request: AnalysisRequest, context: PluginContext) -> AnalysisResult:
+        return AnalysisResult(annotations_written=0)
+
+
+class NoCapabilitiesAnalyzer(PluginBase):
+    """故意不合规的假插件：没有声明任何能力，注册时必须被认出并给出可读原因。"""
+
+    spec = PluginSpec(
+        id="sample.no-capabilities",
+        kind=PluginKind.ANALYZER,
+        name="样例分析插件（没有声明能力）",
+        version="0.1.0",
+        api_version=PLUGIN_API_VERSION,
+        capabilities=(),
+    )
+
+    def analyze(self, request: AnalysisRequest, context: PluginContext) -> AnalysisResult:
+        raise AssertionError("不合规的插件不应被注册，更不应被调用")
+
+
 FAKE_PLUGINS: tuple[PluginBase, ...] = (
     FakeCollector(),
     FakeImporter(),

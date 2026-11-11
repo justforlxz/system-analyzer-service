@@ -137,3 +137,61 @@ def test_by_kind_filters() -> None:
         "sample.importer"
     ]
     assert len(registry.by_kind(PluginKind.ANALYZER)) == 1
+
+
+def test_all_four_kinds_register_through_the_single_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """四类插件都走 ``register_builtins`` 这一个入口，注册后可以按类别查出。"""
+    monkeypatch.setattr(builtins, "BUILTIN_PLUGINS", FAKE_PLUGINS)
+
+    registry = register_builtins(PluginRegistry())
+
+    assert len(registry) == len(FAKE_PLUGINS)
+    assert {plugin.spec.kind for plugin in registry.all()} == set(PluginKind)
+    assert [plugin.spec.id for plugin in registry.by_kind(PluginKind.COLLECTOR)] == [
+        "sample.collector"
+    ]
+
+
+def test_by_capability_finds_plugins_by_declared_capability() -> None:
+    """按 manifest 的 capabilities 查插件；没人声明的能力返回空。"""
+    registry = PluginRegistry()
+    for plugin in FAKE_PLUGINS:
+        registry.register(plugin)
+
+    assert [plugin.spec.id for plugin in registry.by_capability("sample.annotations")] == [
+        "sample.analyzer"
+    ]
+    assert registry.by_capability("sample.unknown") == ()
+
+
+def test_builtin_list_with_api_version_mismatch_leaves_the_registry_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """清单里混入版本不符的插件时，整份清单都不注册，注册表保持原样。"""
+    monkeypatch.setattr(
+        builtins,
+        "BUILTIN_PLUGINS",
+        (FakeAnalyzer(), LegacyApiVersionAnalyzer()),
+    )
+    registry = PluginRegistry()
+
+    with pytest.raises(ApiVersionMismatchError):
+        register_builtins(registry)
+
+    assert len(registry) == 0
+    assert registry.get(FakeAnalyzer.spec.id) is None
+
+
+def test_builtin_list_with_duplicate_ids_is_rejected_before_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一份清单里出现重复 id 时同样一条都不写。"""
+    monkeypatch.setattr(builtins, "BUILTIN_PLUGINS", (FakeAnalyzer(), FakeAnalyzer()))
+    registry = PluginRegistry()
+
+    with pytest.raises(DuplicatePluginError):
+        register_builtins(registry)
+
+    assert len(registry) == 0

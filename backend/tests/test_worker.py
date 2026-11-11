@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 from system_analyzer.jobs.models import JobStatus
 from system_analyzer.jobs.queue import Job
+from system_analyzer.worker import main as worker_main
 from system_analyzer.worker.runner import Worker
 
 
@@ -71,3 +72,24 @@ async def test_empty_queue_returns_false() -> None:
     worker = Worker(FakeQueue([]), {}, worker_id="worker-test")
 
     assert await worker.run_once() is False
+
+
+def test_main_unloads_plugins_when_the_process_exits(
+    monkeypatch,
+) -> None:
+    """进程退出时执行插件的 ``on_unload``：加载发生在任务调用插件时，卸载接在退出时。"""
+    unloaded: list[str] = []
+
+    class SpyRegistry:
+        def unload_all(self) -> None:
+            unloaded.append("unload_all")
+
+    async def fake_run_worker(_settings: object) -> None:
+        return None
+
+    monkeypatch.setattr(worker_main, "register_builtins", SpyRegistry)
+    monkeypatch.setattr(worker_main, "run_worker", fake_run_worker)
+
+    worker_main.main()
+
+    assert unloaded == ["unload_all"]
