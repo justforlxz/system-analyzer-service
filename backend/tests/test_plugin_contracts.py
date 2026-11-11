@@ -13,14 +13,20 @@ import system_analyzer
 from fake_plugins import (
     FAKE_PLUGINS,
     ExplodingAnalyzer,
+    ExplodingOnLoadAnalyzer,
+    FailingUnloadAnalyzer,
     FakeAnalyzer,
     FakeCollector,
+    FakeDataAccess,
     FakeImporter,
     FakeVisualization,
     LegacyApiVersionAnalyzer,
+    NoCapabilitiesAnalyzer,
+    RecordingAnalyzer,
     fake_context,
     sample_source,
 )
+from system_analyzer.plugins.config import PluginConfigError, validate_plugin_config
 from system_analyzer.plugins.contracts import (
     PLUGIN_API_VERSION,
     AnalysisRequest,
@@ -38,7 +44,11 @@ from system_analyzer.plugins.contracts import (
     VisualizationPlugin,
     invoke_plugin,
 )
-from system_analyzer.plugins.registry import PluginRegistry, reset_registry
+from system_analyzer.plugins.registry import (
+    PluginNotRegisteredError,
+    PluginRegistry,
+    reset_registry,
+)
 
 PACKAGE_ROOT = Path(system_analyzer.__file__).parent
 TESTS_ROOT = Path(__file__).parent
@@ -380,3 +390,225 @@ def test_builtin_list_scanner_catches_every_definition_style(source: str) -> Non
 
 def test_builtin_list_scanner_ignores_other_names() -> None:
     assert _defines_builtin_plugins("OTHER_PLUGINS = ()\n") is False
+
+
+# --- 生命周期：on_load / on_unload 的真实调用方 ---------------------------------------
+
+
+def test_invoke_loads_once_before_the_entry_method() -> None:
+    """第一次调用前执行一次 ``on_load``，之后每次调用都不再重复加载。"""
+    plugin = RecordingAnalyzer()
+    registry = PluginRegistry()
+    registry.register(plugin)
+    data = FakeDataAccess()
+
+    first = registry.invoke(
+        plugin.spec.id,
+        lambda loaded, context: loaded.analyze(AnalysisRequest(boot_id="boot-1"), context),
+        data=data,
+        config={"strict": True},
+        run_id="run-1",
+    )
+    second = registry.invoke(
+        plugin.spec.id,
+        lambda loaded, context: loaded.analyze(AnalysisRequest(boot_id="boot-1"), context),
+        data=data,
+        config={"strict": True},
+        run_id="run-1",
+    )
+
+    assert first.annotations_written == second.annotations_written == 1
+    assert plugin.called() == ["load", "analyze", "analyze"]
+    assert registry.is_loaded(plugin.spec.id)
+
+    # 配置与任务 id 通过同一个上下文交给插件，而不是让插件自己去读环境变量。
+    entry_context = plugin.calls[1][1]
+    assert entry_context.plugin_id == plugin.spec.id
+    assert entry_context.config == {"strict": True}
+    assert entry_context.run_id == "run-1"
+    assert entry_context.data is data
+
+
+def test_unload_all_calls_on_unload_with_the_load_time_context() -> None:
+    """卸载时执行 ``on_unload``，用的是加载那一次的上下文；重复卸载不再调用。"""
+    plugin = RecordingAnalyzer()
+    registry = PluginRegistry()
+    registry.register(plugin)
+    registry.invoke(
+        plugin.spec.id,
+        lambda loaded, context: loaded.analyze(AnalysisRequest(), context),
+        data=FakeDataAccess(),
+        config={"strict": True},
+    )
+
+    registry.unload_all()
+
+    assert plugin.called() == ["load", "analyze", "unload"]
+    assert plugin.calls[0][1] is plugin.calls[-1][1]
+    assert not registry.is_loaded(plugin.spec.id)
+    assert len(registry) == 1
+
+    registry.unload_all()
+
+    assert plugin.called() == ["load", "analyze", "unload"]
+
+
+def test_unload_all_skips_plugins_that_were_never_loaded() -> None:
+    """没有加载就没有需要释放的东西，``on_unload`` 不调用。"""
+    plugin = RecordingAnalyzer()
+    registry = PluginRegistry()
+    registry.register(plugin)
+
+    registry.unload_all()
+
+    assert plugin.called() == []
+
+
+def test_on_load_failure_is_isolated_and_other_plugins_still_work() -> None:
+    """加载失败的插件不调用入口方法、不改注册表，其它插件照常可用。"""
+    exploding = ExplodingOnLoadAnalyzer()
+    healthy = FakeAnalyzer()
+    registry = PluginRegistry()
+    registry.register(healthy)
+    registry.register(exploding)
+
+    with pytest.raises(PluginExecutionError) as excinfo:
+        registry.invoke(
+            exploding.spec.id,
+            lambda loaded, context: loaded.analyze(AnalysisRequest(), context),
+            data=FakeDataAccess(),
+        )
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert exploding.load_attempts == 1
+    assert not registry.is_loaded(exploding.spec.id)
+    assert len(registry) == 2
+
+    data = FakeDataAccess()
+    result = registry.invoke(
+        healthy.spec.id,
+        lambda loaded, context: loaded.analyze(AnalysisRequest(boot_id="boot-1"), context),
+        data=data,
+    )
+
+    assert result.annotations_written == 1
+    assert data.written == [(healthy.spec.id, "boot-1")]
+
+
+def test_unload_failure_of_one_plugin_does_not_block_the_others() -> None:
+    """卸载是收尾动作：一个插件的 ``on_unload`` 抛异常，其余插件仍然被卸载。"""
+    failing = FailingUnloadAnalyzer()
+    healthy = RecordingAnalyzer()
+    registry = PluginRegistry()
+    registry.register(failing)
+    registry.register(healthy)
+    registry.invoke(
+        failing.spec.id,
+        lambda loaded, context: loaded.analyze(AnalysisRequest(), context),
+        data=FakeDataAccess(),
+    )
+    registry.invoke(
+        healthy.spec.id,
+        lambda loaded, context: loaded.analyze(AnalysisRequest(), context),
+        data=FakeDataAccess(),
+        config={"strict": True},
+    )
+
+    registry.unload_all()
+
+    assert failing.unloaded is True
+    assert healthy.called() == ["load", "analyze", "unload"]
+
+
+def test_invoke_rejects_an_unknown_plugin_id() -> None:
+    with pytest.raises(PluginNotRegisteredError):
+        PluginRegistry().invoke(
+            "sample.missing", lambda _plugin, _context: None, data=FakeDataAccess()
+        )
+
+
+# --- 配置校验 -----------------------------------------------------------------------
+
+
+def test_invalid_config_is_rejected_before_the_plugin_is_touched() -> None:
+    """配置不合法时直接拒绝：连 ``on_load`` 都不执行，插件一次都没被碰到。"""
+    plugin = RecordingAnalyzer()
+    registry = PluginRegistry()
+    registry.register(plugin)
+
+    with pytest.raises(PluginConfigError) as excinfo:
+        registry.invoke(
+            plugin.spec.id,
+            lambda loaded, context: loaded.analyze(AnalysisRequest(), context),
+            data=FakeDataAccess(),
+            config={"strict": "yes"},
+        )
+
+    message = str(excinfo.value)
+    assert plugin.spec.id in message
+    assert "strict" in message
+    assert plugin.called() == []
+    assert not registry.is_loaded(plugin.spec.id)
+
+
+def test_config_is_refused_when_the_manifest_declares_no_config() -> None:
+    """``config_schema = {}`` 表示不接受任何配置，传了就是错。"""
+    assert validate_plugin_config(FakeAnalyzer.spec) == {}
+    assert validate_plugin_config(FakeAnalyzer.spec, {}) == {}
+
+    with pytest.raises(PluginConfigError) as excinfo:
+        validate_plugin_config(FakeAnalyzer.spec, {"strict": True})
+
+    assert FakeAnalyzer.spec.id in str(excinfo.value)
+
+
+def test_missing_required_config_is_rejected() -> None:
+    with pytest.raises(PluginConfigError) as excinfo:
+        validate_plugin_config(RecordingAnalyzer.spec, {})
+
+    assert "strict" in str(excinfo.value)
+
+
+# --- API 版本的全部拒绝形态 ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("api_version", "error"),
+    [
+        ("0.9", ApiVersionMismatchError),
+        ("1", ApiVersionMismatchError),
+        ("1.0.0", ApiVersionMismatchError),
+        (" 1.0", ApiVersionMismatchError),
+        ("1.0 ", ApiVersionMismatchError),
+        ("", PluginManifestError),
+        ("   ", PluginManifestError),
+    ],
+)
+def test_api_version_outside_the_exact_match_is_rejected(
+    api_version: str,
+    error: type[Exception],
+) -> None:
+    """版本比较是字符串全等：少一个分量、多一个分量、多一个空格都要拒绝。"""
+    spec = replace(FakeAnalyzer.spec, api_version=api_version)
+
+    with pytest.raises(error) as excinfo:
+        spec.validate()
+
+    message = str(excinfo.value)
+    if error is ApiVersionMismatchError:
+        assert api_version in message
+    else:
+        assert "api_version" in message
+
+
+def test_intentionally_noncompliant_plugin_is_rejected_with_a_readable_reason() -> None:
+    """故意不合规的插件（没有声明能力）进不了注册表，错误信息指出插件与字段。"""
+    registry = PluginRegistry()
+
+    with pytest.raises(PluginManifestError) as excinfo:
+        registry.register(NoCapabilitiesAnalyzer())
+
+    message = str(excinfo.value)
+    assert NoCapabilitiesAnalyzer.spec.id in message
+    assert "capabilities" in message
+    assert len(registry) == 0

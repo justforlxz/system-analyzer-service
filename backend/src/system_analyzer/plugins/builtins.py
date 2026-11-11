@@ -10,7 +10,7 @@ API 进程与 Worker 进程都调用 ``register_builtins``，不允许在任意�
 """
 
 from system_analyzer.plugins.contracts import Plugin
-from system_analyzer.plugins.registry import PluginRegistry, get_registry, plugin_spec
+from system_analyzer.plugins.registry import PluginRegistry, get_registry
 
 BUILTIN_PLUGINS: tuple[Plugin, ...] = ()
 """内置插件清单。
@@ -28,10 +28,8 @@ def register_builtins(registry: PluginRegistry | None = None) -> PluginRegistry:
 
     注册不合格（清单里放了没有 manifest 的对象、manifest 有错、插件 API 版本不符）时直接抛错，
     不做"跳过继续"：``BUILTIN_PLUGINS`` 是仓库代码，出错必须立刻暴露，
-    而不是让服务带着半个插件集启动。
+    而不是让服务带着半个插件集启动。整份清单先全部校验通过才写入注册表，失败时注册表保持原样。
     """
     target = registry if registry is not None else get_registry()
-    for plugin in BUILTIN_PLUGINS:
-        if target.get(plugin_spec(plugin).id) is None:
-            target.register(plugin)
+    target.register_all(BUILTIN_PLUGINS)
     return target

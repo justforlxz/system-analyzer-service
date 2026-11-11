@@ -41,8 +41,12 @@ def main() -> None:
         level=settings.log_level.upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    register_builtins()
-    asyncio.run(run_worker(settings))
+    registry = register_builtins()
+    try:
+        asyncio.run(run_worker(settings))
+    finally:
+        # 进程退出（Ctrl+C、未捕获异常都算）时执行插件的 on_unload，用的是加载它的那次上下文。
+        registry.unload_all()
 
 
 if __name__ == "__main__":
