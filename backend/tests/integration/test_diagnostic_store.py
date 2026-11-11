@@ -580,17 +580,29 @@ async def test_cannot_append_to_a_collection_that_did_not_import(
 # ---------------------------------------------------------------------------
 
 
-def _skip_jobs_table(
+def _skip_other_tables(
     obj: Any, name: str | None, type_: str, reflected: bool, compare_to: Any
 ) -> bool:
-    """``jobs`` 表由 0001 的手写迁移建立，代码里用原生 SQL 访问，没有 ORM 模型。"""
-    return name not in ("jobs", "jobs_claimable_idx")
+    """本文件只对照诊断数据的五张表。
+
+    ``jobs``（0001）用原生 SQL 访问、没有 ORM 模型；``ssh_targets``（0003，任务 3.1）的模型在
+    ``remote/models.py``，与迁移的对照由 ``test_ssh_targets_store.py`` 负责。
+    """
+    return name not in (
+        "jobs",
+        "jobs_claimable_idx",
+        "ssh_targets",
+        "ssh_targets_port_check",
+        "ssh_targets_host_check",
+        "ssh_targets_username_check",
+        "ssh_targets_password_env_var_check",
+    )
 
 
 async def test_migration_matches_models(engine: AsyncEngine) -> None:
     def diff(sync_connection: Any) -> list[Any]:
         context = MigrationContext.configure(
-            sync_connection, opts={"include_object": _skip_jobs_table}
+            sync_connection, opts={"include_object": _skip_other_tables}
         )
         return compare_metadata(context, Base.metadata)
 
