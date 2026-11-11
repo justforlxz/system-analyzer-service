@@ -10,7 +10,10 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
+# SSH 目标机器表（任务 3.1）与诊断数据共用一份 MetaData，模型声明在 remote/models.py。
+# 只导入、不使用：没有这一行，autogenerate 会把它当成「数据库里多出来的表」生成删表操作。
 from system_analyzer.core.config import get_settings
+from system_analyzer.remote import models as _remote_models  # noqa: F401
 from system_analyzer.storage.models import Base
 
 config = context.config

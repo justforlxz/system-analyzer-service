@@ -270,6 +270,16 @@
 │   │   │   ├── __init__.py
 │   │   │   ├── runner.py              任务执行循环（成功、失败、未知类型）
 │   │   │   └── main.py                Worker 进程入口（uv run sas-worker）
+│   │   ├── remote/
+│   │   │   ├── __init__.py            远程目标机器管理与 SSH 访问（3.1）
+│   │   │   ├── client.py              连接、命令执行、文件传输（asyncssh）
+│   │   │   ├── credentials.py         口令引用 → 环境变量取值
+│   │   │   ├── errors.py              连接失败 / 认证失败 / 超时 三类可区分错误
+│   │   │   ├── models.py              ssh_targets 表（只存口令变量名）
+│   │   │   ├── probe.py               连接测试与系统基本信息
+│   │   │   ├── service.py             目标机器增删改查 + 连接测试
+│   │   │   ├── sync.py                供 3.4 Collector 插件使用的同步入口
+│   │   │   └── targets.py             目标机器模型与仓储
 │   │   ├── collectors/
 │   │   │   └── __init__.py            SSH 采集插件目录（3.4 - 3.7）
 │   │   ├── importers/
@@ -341,6 +351,7 @@
 | `jobs/` | 任务状态机与任务队列 | 具体任务做什么 |
 | `worker/` | 领取任务、调用处理器、记录结果 | 定义业务数据结构 |
 | `collectors/` `importers/` `analyzers/` | 各插件实现 | 其他类别的插件逻辑 |
+| `remote/` | SSH 连接、命令执行、文件传输、目标机器记录（3.1） | 实现采集插件（在 `collectors/`）、写采集数据、加 HTTP 路由 |
 | `frontend/` | 页面、交互、数据展示 | 重新实现后端业务逻辑（不使用 Route Handlers 做业务） |
 
 前端规则（来自父 issue，这里再明确一次）：普通页面优先 Server Components，
@@ -425,6 +436,7 @@
 | `SAS_WORKER_ID` | 否 | `worker-1` | Worker 实例标识，写入任务锁 |
 | `SAS_WORKER_POLL_INTERVAL_SECONDS` | 否 | `2.0` | 队列为空时的轮询间隔 |
 | `SAS_WORKER_LOCK_TIMEOUT_SECONDS` | 否 | `900` | 任务锁超时，超时后任务可被重新领取 |
+| `SAS_SSH_PASSWORD` | 连真实目标机器时必填 | 无 | SSH 目标机器的口令（任务 3.1）。数据库里只存这个变量的名字（`ssh_targets.password_env_var`），口令本身不入库、不进日志、不进仓库 |
 | `SAS_TEST_DATABASE_URL` | 跑集成测试时必填 | 无 | 集成测试使用的数据库；未配置时 `pytest -m integration` 直接报错退出 |
 | `NEXT_PUBLIC_API_BASE_URL` | 否 | `http://127.0.0.1:8000` | 前端访问的后端地址 |
 

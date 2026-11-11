@@ -7,7 +7,7 @@
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", description="日志级别")
     api_host: str = Field(default="127.0.0.1", description="API 监听地址")
     api_port: int = Field(default=8000, description="API 监听端口")
+
+    ssh_password: SecretStr | None = Field(
+        default=None,
+        description=(
+            "远程目标机器的 SSH 口令，来自环境变量 SAS_SSH_PASSWORD（或未提交的 backend/.env）。"
+            "目标机器记录里只存这个变量的名字，口令本身不入库、不进日志。"
+        ),
+    )
 
     worker_id: str = Field(default="worker-1", description="Worker 实例标识，写入任务锁定字段")
     worker_poll_interval_seconds: float = Field(
