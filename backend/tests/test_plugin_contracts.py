@@ -1,0 +1,382 @@
+"""插件契约测试：manifest 规则、四类接口结构、生命周期、异常隔离与「插件不得做的事」。
+
+这一组用例就是 ``docs/plugin-contracts.md`` 里「契约测试方案」的实现，跑法见该文档。
+"""
+
+import ast
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+import system_analyzer
+from fake_plugins import (
+    FAKE_PLUGINS,
+    ExplodingAnalyzer,
+    FakeAnalyzer,
+    FakeCollector,
+    FakeImporter,
+    FakeVisualization,
+    LegacyApiVersionAnalyzer,
+    fake_context,
+    sample_source,
+)
+from system_analyzer.plugins.contracts import (
+    PLUGIN_API_VERSION,
+    AnalysisRequest,
+    AnalyzerPlugin,
+    ApiVersionMismatchError,
+    CollectorPlugin,
+    CollectRequest,
+    ImporterPlugin,
+    PluginBase,
+    PluginContext,
+    PluginExecutionError,
+    PluginInputError,
+    PluginKind,
+    PluginManifestError,
+    VisualizationPlugin,
+    invoke_plugin,
+)
+from system_analyzer.plugins.registry import PluginRegistry, reset_registry
+
+PACKAGE_ROOT = Path(system_analyzer.__file__).parent
+TESTS_ROOT = Path(__file__).parent
+
+#: 插件实现不允许碰的东西：数据库驱动、迁移工具、Core 的存储层与全局配置/引擎。
+BANNED_IMPORTS = (
+    "sqlalchemy",
+    "asyncpg",
+    "alembic",
+    "system_analyzer.storage",
+    "system_analyzer.core",
+)
+
+#: 三类需要写实现文件的插件目录。
+PLUGIN_DIRS = ("collectors", "importers", "analyzers")
+
+
+@pytest.fixture(autouse=True)
+def clean_registry():
+    reset_registry()
+    yield
+    reset_registry()
+
+
+# --- 四类接口：结构可检查，样例可运行 -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("plugin", "protocol", "kind"),
+    [
+        (FakeCollector(), CollectorPlugin, PluginKind.COLLECTOR),
+        (FakeImporter(), ImporterPlugin, PluginKind.IMPORTER),
+        (FakeAnalyzer(), AnalyzerPlugin, PluginKind.ANALYZER),
+        (FakeVisualization(), VisualizationPlugin, PluginKind.VISUALIZATION),
+    ],
+)
+def test_fake_plugin_matches_its_kind_protocol(
+    plugin: PluginBase, protocol: type, kind: PluginKind
+) -> None:
+    """每类接口都有一个假插件，且结构上满足该类接口。"""
+    assert plugin.spec.kind is kind
+    assert isinstance(plugin, protocol)
+    plugin.spec.validate()
+
+
+def test_fake_plugins_cover_all_four_kinds() -> None:
+    assert {plugin.spec.kind for plugin in FAKE_PLUGINS} == set(PluginKind)
+
+
+def test_collector_writes_through_the_single_data_entry() -> None:
+    collector = FakeCollector()
+    context, data = fake_context(collector)
+
+    result = collector.collect(CollectRequest(target_id="target-1", run_id="run-1"), context)
+
+    assert result.records_written == 1
+    assert data.written == [(collector.spec.id, "run-1")]
+
+
+def test_importer_detects_then_imports() -> None:
+    importer = FakeImporter()
+    context, data = fake_context(importer)
+    source = sample_source("boot-1.journal.gz")
+
+    assert importer.detect(source) is True
+    result = importer.import_source(source, context)
+
+    assert result.records_written == 1
+    assert data.written == [(importer.spec.id, str(source.path))]
+
+
+def test_analyzer_reads_then_writes_annotations() -> None:
+    analyzer = FakeAnalyzer()
+    context, data = fake_context(analyzer)
+
+    result = analyzer.analyze(AnalysisRequest(boot_id="boot-1"), context)
+
+    assert result.annotations_written == 1
+    assert data.written == [(analyzer.spec.id, "boot-1")]
+
+
+def test_visualization_plugin_only_declares() -> None:
+    descriptor = FakeVisualization().describe()
+
+    assert descriptor.component == "timeline.sample"
+    assert descriptor.required_inputs == ("timeline",)
+
+
+def test_lifecycle_callbacks_default_to_noop() -> None:
+    plugin = FakeAnalyzer()
+    context, _ = fake_context(plugin)
+
+    assert plugin.on_load(context) is None
+    assert plugin.on_unload(context) is None
+
+
+def test_plugin_may_skip_the_base_class() -> None:
+    """生命周期回调可选：不继承 ``PluginBase`` 的插件也能注册。"""
+
+    class BareCollector:
+        spec = replace(FakeCollector.spec, id="sample.bare-collector")
+
+        def collect(self, request: CollectRequest, context: PluginContext) -> object:
+            raise AssertionError("本用例不调用采集")
+
+    registry = PluginRegistry()
+    registry.register(BareCollector())
+
+    assert registry.get("sample.bare-collector") is not None
+
+
+# --- manifest 规则 ------------------------------------------------------------------
+
+
+def test_valid_manifest_passes() -> None:
+    for plugin in FAKE_PLUGINS:
+        plugin.spec.validate()
+
+
+@pytest.mark.parametrize("field", ["id", "name", "version", "api_version"])
+def test_empty_required_field_is_rejected(field: str) -> None:
+    spec = replace(FakeAnalyzer.spec, **{field: "  "})
+
+    with pytest.raises(PluginManifestError) as excinfo:
+        spec.validate()
+
+    assert field in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("id", None), ("name", 0), ("capabilities", (1,))],
+)
+def test_non_string_manifest_value_is_rejected(field: str, value: object) -> None:
+    """字段写成了非字符串也要给出可读原因，而不是抛出 AttributeError。"""
+    spec = replace(FakeAnalyzer.spec, **{field: value})
+
+    with pytest.raises(PluginManifestError):
+        spec.validate()
+
+
+@pytest.mark.parametrize("kind", ["analyzer", "analyser", ""])
+def test_kind_outside_plugin_kind_is_rejected(kind: str) -> None:
+    """``kind`` 写成字符串或拼错时必须被拒：否则 by_kind 永远查不到，插件静默失效。"""
+    spec = replace(FakeAnalyzer.spec, kind=kind)
+
+    with pytest.raises(PluginManifestError) as excinfo:
+        spec.validate()
+
+    assert "kind" in str(excinfo.value)
+    assert repr(kind) in str(excinfo.value)
+
+
+def test_capabilities_must_be_a_tuple() -> None:
+    """写成单个字符串会被逐字符当成 capability，必须拒绝。"""
+    spec = replace(FakeAnalyzer.spec, capabilities="sample.annotations")
+
+    with pytest.raises(PluginManifestError) as excinfo:
+        spec.validate()
+
+    assert "tuple" in str(excinfo.value)
+
+
+def test_api_version_must_match_exactly() -> None:
+    """版本比较是字符串全等：``1.0.0`` 与 ``1.0`` 不是同一个版本。"""
+    spec = replace(FakeAnalyzer.spec, api_version="1.0.0")
+
+    with pytest.raises(ApiVersionMismatchError):
+        spec.validate()
+
+
+def test_api_version_mismatch_message_shows_both_versions() -> None:
+    spec = LegacyApiVersionAnalyzer.spec
+
+    with pytest.raises(ApiVersionMismatchError) as excinfo:
+        spec.validate()
+
+    error = excinfo.value
+    assert error.plugin_id == spec.id
+    assert error.required == "0.9"
+    assert error.supported == PLUGIN_API_VERSION
+    assert "0.9" in str(error)
+    assert PLUGIN_API_VERSION in str(error)
+
+
+def test_empty_capabilities_are_rejected() -> None:
+    spec = replace(FakeAnalyzer.spec, capabilities=())
+
+    with pytest.raises(PluginManifestError) as excinfo:
+        spec.validate()
+
+    assert "capabilities" in str(excinfo.value)
+
+
+def test_blank_capability_is_rejected() -> None:
+    spec = replace(FakeAnalyzer.spec, capabilities=("sample.annotations", " "))
+
+    with pytest.raises(PluginManifestError):
+        spec.validate()
+
+
+@pytest.mark.parametrize("schema", [{"type": "array"}, [], "not-a-schema"])
+def test_config_schema_must_be_object_schema(schema: object) -> None:
+    spec = replace(FakeAnalyzer.spec, config_schema=schema)  # type: ignore[arg-type]
+
+    with pytest.raises(PluginManifestError):
+        spec.validate()
+
+
+def test_config_schema_defaults_to_no_config() -> None:
+    assert FakeAnalyzer.spec.config_schema == {}
+
+
+# --- 异常隔离 -----------------------------------------------------------------------
+
+
+def test_plugin_crash_is_wrapped_and_registry_survives() -> None:
+    """插件抛异常不影响 Core，也不影响已经注册的其它插件。"""
+    registry = PluginRegistry()
+    registry.register(FakeAnalyzer())
+    registry.register(ExplodingAnalyzer())
+
+    exploding = registry.get(ExplodingAnalyzer.spec.id)
+    assert exploding is not None
+    context, _ = fake_context(exploding)
+
+    with pytest.raises(PluginExecutionError) as excinfo:
+        invoke_plugin(
+            ExplodingAnalyzer.spec.id,
+            lambda: exploding.analyze(AnalysisRequest(), context),  # type: ignore[attr-defined]
+        )
+
+    assert excinfo.value.plugin_id == ExplodingAnalyzer.spec.id
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert len(registry) == 2
+
+    healthy = registry.get(FakeAnalyzer.spec.id)
+    assert healthy is not None
+    healthy_context, data = fake_context(healthy)
+    result = invoke_plugin(
+        healthy.spec.id,
+        lambda: healthy.analyze(AnalysisRequest(boot_id="boot-1"), healthy_context),  # type: ignore[attr-defined]
+    )
+
+    assert result.annotations_written == 1
+    assert data.written == [(FakeAnalyzer.spec.id, "boot-1")]
+
+
+def test_contract_error_is_not_rewrapped() -> None:
+    """插件主动抛的 ``PluginError`` 是契约内的失败信号，原样交给 Core。"""
+    importer = FakeImporter()
+    context, _ = fake_context(importer)
+
+    with pytest.raises(PluginInputError):
+        invoke_plugin(
+            importer.spec.id,
+            lambda: importer.import_source(sample_source("other.tar"), context),
+        )
+
+
+# --- 插件不得做的事 ---------------------------------------------------------------
+
+
+def _imported_modules(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            modules.add(node.module)
+    return modules
+
+
+def _plugin_sources() -> list[Path]:
+    sources = [path for name in PLUGIN_DIRS for path in (PACKAGE_ROOT / name).rglob("*.py")]
+    sources.append(TESTS_ROOT / "fake_plugins.py")
+    return sources
+
+
+def test_plugin_implementations_never_import_storage() -> None:
+    """插件不得直接操作数据库：实现文件里连存储层的 import 都不许出现。"""
+    offenders = []
+    for path in _plugin_sources():
+        for module in _imported_modules(path):
+            if any(
+                module == banned or module.startswith(f"{banned}.") for banned in BANNED_IMPORTS
+            ):
+                offenders.append(f"{path.relative_to(PACKAGE_ROOT.parent)}: {module}")
+
+    assert not offenders, "插件实现里出现了存储层或全局配置的 import：" + "; ".join(offenders)
+
+
+def _defines_builtin_plugins(source: str) -> bool:
+    """源码里是否定义了 ``BUILTIN_PLUGINS``。
+
+    同时处理 ``BUILTIN_PLUGINS = ()`` 与 ``BUILTIN_PLUGINS: tuple[Plugin, ...] = ()``：
+    后者在语法树里是 ``ast.AnnAssign``，没有 ``targets`` 属性。
+    """
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Assign):
+            targets: list[ast.expr] = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if any(
+            isinstance(target, ast.Name) and target.id == "BUILTIN_PLUGINS" for target in targets
+        ):
+            return True
+    return False
+
+
+def test_builtin_plugin_list_lives_in_one_module_only() -> None:
+    """内置插件清单只允许出现在 ``plugins/builtins.py``。"""
+    offenders = [
+        str(path.relative_to(PACKAGE_ROOT.parent))
+        for path in PACKAGE_ROOT.rglob("*.py")
+        if not (path.name == "builtins.py" and path.parent.name == "plugins")
+        and _defines_builtin_plugins(path.read_text(encoding="utf-8"))
+    ]
+
+    assert not offenders, "内置插件清单出现在别的模块里：" + "; ".join(offenders)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "BUILTIN_PLUGINS = ()\n",
+        "BUILTIN_PLUGINS: tuple[Plugin, ...] = ()\n",
+        "class Registry:\n    BUILTIN_PLUGINS: tuple = ()\n",
+        "def load():\n    BUILTIN_PLUGINS = ()\n",
+    ],
+)
+def test_builtin_list_scanner_catches_every_definition_style(source: str) -> None:
+    """守卫用例本身要有覆盖：两种赋值写法都要被认出来。"""
+    assert _defines_builtin_plugins(source) is True
+
+
+def test_builtin_list_scanner_ignores_other_names() -> None:
+    assert _defines_builtin_plugins("OTHER_PLUGINS = ()\n") is False
