@@ -36,7 +36,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -201,38 +201,6 @@ class JournalBundle:
     records: tuple[dict[str, Any], ...]
     source_sha256: str
     resources: ResourceAvailability
-
-
-@runtime_checkable
-class CollectionImportAccess(Protocol):
-    """导入需要的数据入口：整份采集一次写入。
-
-    ``docs/plugin-contracts.md`` 第 5 节的 ``PluginDataAccess`` 只有逐条追加与只读查询，装不下
-    导入：``docs/data-model.md`` 第 3 节要求记录的 ``entity`` 能在同一份采集里解析到，而 Machine
-    与 Boot 两行是写入的前置条件（``storage/validation.py`` 的 ``entity_problems``、
-    ``_reference_problems``）；三种行还必须落在同一个事务里，失败才不会留下半份数据。这件事在
-    任务 1.1 的 ``DiagnosticStore.import_collection`` 上已经做好，插件通过 ``context.data`` 调它，
-    自己不会 import 存储层。
-
-    1.3 的 ``importers/bootrec_importer.py`` 里有同形的同名协议；两个任务各自声明了一份，
-    合并后应当提到公共位置（见 ``docs/journal-archive-import.md`` 的偏差清单）。
-    """
-
-    async def import_collection(
-        self,
-        collection: CollectionRef,
-        entities: Sequence[BaseModel],
-        records: Sequence[Mapping[str, Any]],
-        *,
-        source_sha256: str | None = None,
-        resources: ResourceAvailability | None = None,
-    ) -> Any:
-        """写入一整份采集，返回存储层的导入结果（含写入与跳过的条数）。"""
-
-
-# ----------------------------------------------------------------------
-# 解析结果
-# ----------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -1116,7 +1084,6 @@ __all__ = [
     "DEFAULT_MAX_DECOMPRESSED_BYTES",
     "ENTRY_MEMORY_ESTIMATE_BYTES",
     "PLUGIN_ID",
-    "CollectionImportAccess",
     "JournalArchiveSummary",
     "JournalBundle",
     "ParsedJournal",
