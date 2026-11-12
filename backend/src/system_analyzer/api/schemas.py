@@ -11,7 +11,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +26,7 @@ from system_analyzer.domain.bootrec import (
     RecordKind,
 )
 from system_analyzer.jobs.models import JobStatus
+from system_analyzer.jobs.queue import JobRecord
 from system_analyzer.storage import CollectionState, ImportStatus
 from system_analyzer.timeline import (
     ClockDrift,
@@ -478,3 +481,217 @@ def cursor_response(cursor: TimeCursor) -> CursorResponse:
         previous_ns=cursor.previous_ns,
         next_ns=cursor.next_ns,
     )
+
+
+# ----------------------------------------------------------------------
+# 机器管理与采集任务（任务 4.1）
+# ----------------------------------------------------------------------
+
+
+class SystemInfoResponse(BaseModel):
+    """目标机器在一次连接测试里报出的系统基本信息。取不到的项为 null，不填 0。"""
+
+    hostname: str
+    os_release: str | None = None
+    kernel_version: str | None = None
+    architecture: str | None = None
+    cpu_count: int | None = None
+    memory_total_bytes: int | None = None
+    boot_id: str | None = None
+
+
+TestConnectionFailureKind = Literal["connect", "auth", "timeout", "credential"]
+"""连接测试失败的四种原因。
+
+``credential`` 是「API 进程自己没有配置口令环境变量」，与 ``auth``（口令不对）不是一回事：
+前者由运维在服务端改配置就能解决，后者要改目标机器的凭据。这四类之外的情况（例如连接成功
+但读不到系统信息）按统一错误信封返回内部错误，不在这里强行归类。
+"""
+
+
+class TestConnectionFailure(BaseModel):
+    """连接测试没成功时的原因。``message`` 已由后端脱敏，界面直接显示，不自己拼文案。"""
+
+    kind: TestConnectionFailureKind = Field(
+        description="connect=连不上，auth=认证失败，timeout=超时，credential=服务端没有配置口令"
+    )
+    message: str
+
+
+class TestConnectionResponse(BaseModel):
+    """一次连接测试的结果。
+
+    「连不上」是连接测试的正常结果，不是请求失败，所以失败也用 200 返回：``ok`` 为 false 时
+    ``failure`` 有值、``system`` 为 null。
+    """
+
+    ok: bool
+    system: SystemInfoResponse | None = None
+    failure: TestConnectionFailure | None = None
+
+
+class CollectionTaskRequest(BaseModel):
+    """提交一次采集任务。``target_id`` 必须是已经保存的目标机器。"""
+
+    target_id: str = Field(min_length=1, description="要采集的目标机器 id")
+    run_id: UUID | None = Field(
+        None,
+        description="采集任务 id，必须是 UUID；不传时由服务端生成",
+    )
+
+
+class CollectionPhaseRecordResponse(BaseModel):
+    phase: str
+    status: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    detail: str | None = None
+
+
+class CollectionEventResponse(BaseModel):
+    """一条采集操作记录。``detail`` 写失败原因或复用说明，是界面展示失败原因的来源之一。"""
+
+    at: str
+    kind: str
+    phase: str
+    step: str | None = None
+    detail: str | None = None
+
+
+class CollectionAttemptResponse(BaseModel):
+    """一次采集尝试：三个阶段的状态与全部操作记录。"""
+
+    attempt: int
+    status: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    phases: list[CollectionPhaseRecordResponse]
+    events: list[CollectionEventResponse]
+
+
+class CollectionTaskFailure(BaseModel):
+    """采集没成功时的一句话原因。``phase`` 定位到失败的阶段，与阶段无关时为 null。"""
+
+    phase: str | None = None
+    message: str
+
+
+class CollectionTaskResponse(BaseModel):
+    """一次采集任务（``jobs`` 表里 ``kind = collect.target`` 的一行）的对外形状。"""
+
+    task_id: str
+    kind: str
+    status: JobStatus
+    attempts: int
+    max_attempts: int
+    created_at: datetime
+    updated_at: datetime
+    target_id: str | None
+    run_id: str | None
+    cancel_requested: bool
+    latest_attempt: CollectionAttemptResponse | None = Field(
+        None, description="最近一次采集尝试；任务还没开始执行时为 null"
+    )
+    failure: CollectionTaskFailure | None = Field(
+        None, description="采集没成功的可读原因；成功、执行中或取消后清理成功时为 null"
+    )
+
+
+_PHASE_FAILURES = frozenset({"failed", "timed_out"})
+"""阶段状态里算「这次采集没成功」的两个取值。取消与中断不算失败，界面另有文案。"""
+
+
+def collection_task_response(record: JobRecord) -> CollectionTaskResponse:
+    """任务行 → 对外形状。
+
+    采集结果不是任务行的列，而是 ``payload.result.collection`` 里的一份记录（由
+    ``collection/record.py`` 写回）。这里只取界面要用的部分：最近一次尝试的阶段状态、
+    操作记录与失败原因，不把整份 payload 透出去，也不透 ``last_error``（异常原文只进日志）。
+    """
+    payload: dict[str, Any] = record.payload or {}
+    result = payload.get("result")
+    collection = result.get("collection") if isinstance(result, dict) else None
+    mapping = collection if isinstance(collection, dict) else {}
+    raw_attempts = mapping.get("attempts")
+    latest_raw = raw_attempts[-1] if isinstance(raw_attempts, list) and raw_attempts else None
+    latest = _attempt_response(latest_raw) if isinstance(latest_raw, dict) else None
+    return CollectionTaskResponse(
+        task_id=str(record.id),
+        kind=record.kind,
+        status=record.status,
+        attempts=record.attempts,
+        max_attempts=record.max_attempts,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        target_id=_text(payload.get("target_id")),
+        run_id=_text(payload.get("run_id")) or _text(mapping.get("run_id")),
+        cancel_requested=bool(payload.get("cancel_requested", False)),
+        latest_attempt=latest,
+        failure=_task_failure(record, latest),
+    )
+
+
+def _task_failure(
+    record: JobRecord, latest: CollectionAttemptResponse | None
+) -> CollectionTaskFailure | None:
+    """从最近一次尝试里找出可读的失败原因。
+
+    阶段记录里的 ``detail`` 是编排写下的说明（例如恢复远端文件失败的原因），优先用它。
+    没有阶段失败但任务整体失败时给一句固定说明：``jobs.last_error`` 带异常原文，可能含
+    文件路径或 SQL 片段，只该留在 Worker 日志里。
+    """
+    if latest is not None:
+        for phase in latest.phases:
+            if phase.status in _PHASE_FAILURES:
+                return CollectionTaskFailure(
+                    phase=phase.phase,
+                    message=phase.detail or f"{phase.phase} 阶段没有成功（{phase.status}）",
+                )
+    if record.status is JobStatus.FAILED:
+        return CollectionTaskFailure(
+            phase=None,
+            message="任务执行失败，采集记录里没有写下失败原因；详细原因见 Worker 日志",
+        )
+    return None
+
+
+def _attempt_response(raw: dict[str, Any]) -> CollectionAttemptResponse:
+    return CollectionAttemptResponse(
+        attempt=int(raw.get("attempt") or 0),
+        status=str(raw.get("status") or ""),
+        started_at=_text(raw.get("started_at")),
+        finished_at=_text(raw.get("finished_at")),
+        phases=[_phase_response(item) for item in _dict_items(raw.get("phases"))],
+        events=[_event_response(item) for item in _dict_items(raw.get("events"))],
+    )
+
+
+def _phase_response(raw: dict[str, Any]) -> CollectionPhaseRecordResponse:
+    return CollectionPhaseRecordResponse(
+        phase=str(raw.get("phase") or ""),
+        status=str(raw.get("status") or ""),
+        started_at=_text(raw.get("started_at")),
+        finished_at=_text(raw.get("finished_at")),
+        detail=_text(raw.get("detail")),
+    )
+
+
+def _event_response(raw: dict[str, Any]) -> CollectionEventResponse:
+    return CollectionEventResponse(
+        at=str(raw.get("at") or ""),
+        kind=str(raw.get("kind") or ""),
+        phase=str(raw.get("phase") or ""),
+        step=_text(raw.get("step")),
+        detail=_text(raw.get("detail")),
+    )
+
+
+def _dict_items(value: object) -> list[dict[str, Any]]:
+    """记录里的列表项：不是列表就当空，不是字典的项跳过，不因为半份数据整条报错。"""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _text(value: object) -> str | None:
+    return None if value is None else str(value)

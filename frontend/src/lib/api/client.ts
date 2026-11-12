@@ -15,6 +15,22 @@ export type MetricItem = components["schemas"]["MetricItemResponse"];
 export type TrackStatus = components["schemas"]["TrackStatus"];
 export type TrackStateResponse = components["schemas"]["TrackStateResponse"];
 
+export type SshTarget = components["schemas"]["SshTarget"];
+export type SshTargetDraft = components["schemas"]["SshTargetDraft"];
+export type TestConnectionResponse = components["schemas"]["TestConnectionResponse"];
+export type TestConnectionFailure = components["schemas"]["TestConnectionFailure"];
+export type SystemInfoResponse = components["schemas"]["SystemInfoResponse"];
+export type CollectionTaskResponse = components["schemas"]["CollectionTaskResponse"];
+export type CollectionTaskFailure = components["schemas"]["CollectionTaskFailure"];
+export type CollectionAttemptResponse = components["schemas"]["CollectionAttemptResponse"];
+export type CollectionPhaseRecordResponse = components["schemas"]["CollectionPhaseRecordResponse"];
+export type CollectionEventResponse = components["schemas"]["CollectionEventResponse"];
+export type ImportStatusResponse = components["schemas"]["ImportStatusResponse"];
+export type ImportSubmitResponse = components["schemas"]["ImportSubmitResponse"];
+export type ImportJobStatus = components["schemas"]["ImportJobStatus"];
+export type ImportJobFailure = components["schemas"]["ImportJobFailure"];
+export type JobStatus = components["schemas"]["JobStatus"];
+
 export type PageOf<T> = { items: T[]; limit: number; offset: number; total: number };
 
 /** FastAPI 的统一错误信封：`{"error": {"type", "message", "details"}}`。 */
@@ -48,11 +64,30 @@ export function describeError(error: unknown): string {
   return `请求失败：${String(error)}`;
 }
 
-async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${apiRequestBaseUrl()}${path}`, {
+type RequestOptions = {
+  method?: "GET" | "POST" | "PUT" | "DELETE";
+  body?: unknown;
+  signal?: AbortSignal;
+};
+
+/** 发一次 JSON 请求并把错误统一成 ``ApiError``。
+ *
+ * ``204`` 表示「成功但没有响应体」（例如删除），此时返回 ``undefined``：界面不需要为删除
+ * 造一个空对象。
+ */
+async function requestJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const headers: Record<string, string> = { accept: "application/json" };
+  const init: RequestInit = {
+    method: options.method ?? "GET",
     cache: "no-store",
-    headers: { accept: "application/json" },
-  });
+    headers,
+    signal: options.signal,
+  };
+  if (options.body !== undefined) {
+    headers["content-type"] = "application/json";
+    init.body = JSON.stringify(options.body);
+  }
+  const response = await fetch(`${apiRequestBaseUrl()}${path}`, init);
   if (!response.ok) {
     let envelope: ErrorEnvelope = {};
     try {
@@ -67,7 +102,12 @@ async function getJson<T>(path: string): Promise<T> {
       envelope.error?.details ?? [],
     );
   }
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+function getJson<T>(path: string): Promise<T> {
+  return requestJson<T>(path);
 }
 
 function timelinePath(machineId: string, bootId: string): string {
@@ -81,6 +121,126 @@ export function fetchMachine(machineId: string): Promise<MachineResponse> {
 export function fetchCollections(limit = 50): Promise<PageOf<CollectionResponse>> {
   return getJson<PageOf<CollectionResponse>>(`/api/collections?limit=${limit}`);
 }
+
+// ----------------------------------------------------------------------
+// 机器管理（任务 4.1）
+// ----------------------------------------------------------------------
+
+export function fetchTargets(): Promise<SshTarget[]> {
+  return getJson<SshTarget[]>("/api/targets");
+}
+
+export function fetchTarget(targetId: string): Promise<SshTarget> {
+  return getJson<SshTarget>(`/api/targets/${encodeURIComponent(targetId)}`);
+}
+
+export function createTarget(draft: SshTargetDraft): Promise<SshTarget> {
+  return requestJson<SshTarget>("/api/targets", { method: "POST", body: draft });
+}
+
+/** 整体替换：四个字段必须全部提交，与后端的 ``PUT`` 语义一致。 */
+export function replaceTarget(targetId: string, draft: SshTargetDraft): Promise<SshTarget> {
+  return requestJson<SshTarget>(`/api/targets/${encodeURIComponent(targetId)}`, {
+    method: "PUT",
+    body: draft,
+  });
+}
+
+export function deleteTarget(targetId: string): Promise<void> {
+  return requestJson<void>(`/api/targets/${encodeURIComponent(targetId)}`, { method: "DELETE" });
+}
+
+/** 只读连接测试。「连不上」是正常结果（200 加 ``ok: false``），所以不用错误分支处理。 */
+export function testTargetConnection(targetId: string): Promise<TestConnectionResponse> {
+  return requestJson<TestConnectionResponse>(
+    `/api/targets/${encodeURIComponent(targetId)}/test-connection`,
+    { method: "POST" },
+  );
+}
+
+// ----------------------------------------------------------------------
+// 采集任务（任务 4.1）
+// ----------------------------------------------------------------------
+
+export type CollectionTaskQuery = {
+  targetId?: string | null;
+  status?: JobStatus | null;
+  limit?: number;
+  offset?: number;
+};
+
+export function fetchCollectionTasks(
+  query: CollectionTaskQuery = {},
+  signal?: AbortSignal,
+): Promise<PageOf<CollectionTaskResponse>> {
+  const params = new URLSearchParams();
+  if (query.targetId) params.set("target_id", query.targetId);
+  if (query.status) params.set("status", query.status);
+  if (typeof query.limit === "number") params.set("limit", String(query.limit));
+  if (typeof query.offset === "number") params.set("offset", String(query.offset));
+  const suffix = params.toString();
+  return requestJson<PageOf<CollectionTaskResponse>>(
+    `/api/collection-tasks${suffix ? `?${suffix}` : ""}`,
+    { signal },
+  );
+}
+
+export function fetchCollectionTask(taskId: string): Promise<CollectionTaskResponse> {
+  return getJson<CollectionTaskResponse>(`/api/collection-tasks/${encodeURIComponent(taskId)}`);
+}
+
+export function createCollectionTask(targetId: string): Promise<CollectionTaskResponse> {
+  return requestJson<CollectionTaskResponse>("/api/collection-tasks", {
+    method: "POST",
+    body: { target_id: targetId },
+  });
+}
+
+export function cancelCollectionTask(taskId: string): Promise<CollectionTaskResponse> {
+  return requestJson<CollectionTaskResponse>(
+    `/api/collection-tasks/${encodeURIComponent(taskId)}/cancel`,
+    { method: "POST" },
+  );
+}
+
+// ----------------------------------------------------------------------
+// 导入（任务 1.6 的上传接口，界面在任务 4.1 接入）
+// ----------------------------------------------------------------------
+
+/** 上传文件并提交导入任务。文件名与内容都由浏览器给出，前端不解析文件。 */
+export async function submitImport(file: File): Promise<ImportSubmitResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${apiRequestBaseUrl()}/api/imports`, {
+    method: "POST",
+    body: form,
+    cache: "no-store",
+    headers: { accept: "application/json" },
+  });
+  if (!response.ok) {
+    let envelope: ErrorEnvelope = {};
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {};
+    }
+    throw new ApiError(
+      response.status,
+      envelope.error?.type ?? "unknown",
+      envelope.error?.message ?? `上传失败（HTTP ${response.status}）`,
+      envelope.error?.details ?? [],
+    );
+  }
+  return (await response.json()) as ImportSubmitResponse;
+}
+
+export function fetchImportStatus(jobId: string): Promise<ImportStatusResponse> {
+  return getJson<ImportStatusResponse>(`/api/imports/${encodeURIComponent(jobId)}`);
+}
+
+// ----------------------------------------------------------------------
+// 时间线（任务 4.2）
+// ----------------------------------------------------------------------
 
 export type TracksOptions = { startNs?: number | null; endNs?: number | null; kinds?: string[] };
 

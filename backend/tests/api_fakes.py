@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -258,7 +258,7 @@ class FakeStore:
 
 @dataclass
 class FakeJobQueue:
-    """只实现导入接口会用到的三个方法。"""
+    """只实现接口会用到的几个方法（导入与采集任务状态查询）。"""
 
     jobs: dict[UUID, JobRecord] = field(default_factory=dict)
     enqueued: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
@@ -297,6 +297,41 @@ class FakeJobQueue:
             created_at=current.created_at,
             updated_at=current.updated_at,
         )
+
+    async def list_by_kind(
+        self,
+        kind: str,
+        *,
+        target_id: str | None = None,
+        status: JobStatus | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[JobRecord], int]:
+        """与 ``JobQueue.list_by_kind`` 同语义：按创建时间倒序、先筛选再分页。"""
+        records = [record for record in self.jobs.values() if record.kind == kind]
+        if target_id is not None:
+            records = [
+                record for record in records if (record.payload or {}).get("target_id") == target_id
+            ]
+        if status is not None:
+            records = [record for record in records if record.status == status]
+        records.sort(key=lambda record: (record.created_at, str(record.id)), reverse=True)
+        return records[offset : offset + limit], len(records)
+
+    async def request_cancel(self, job_id: UUID, *, kind: str) -> JobRecord | None:
+        """与 ``JobQueue.request_cancel`` 同语义：只对排队中、执行中的任务置取消标记。"""
+        current = self.jobs.get(job_id)
+        if current is None or current.kind != kind:
+            return None
+        if current.status not in (JobStatus.QUEUED, JobStatus.RUNNING):
+            return None
+        updated = replace(
+            current,
+            payload={**(current.payload or {}), "cancel_requested": True},
+            updated_at=_WHEN,
+        )
+        self.jobs[job_id] = updated
+        return updated
 
 
 def make_app(

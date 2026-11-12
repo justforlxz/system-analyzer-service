@@ -4,6 +4,74 @@
  */
 
 export interface paths {
+    "/api/collection-tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 采集任务列表
+         * @description 按创建时间倒序列出采集任务，可按目标机器与任务状态筛选。
+         */
+        get: operations["list_collection_tasks_api_collection_tasks_get"];
+        put?: never;
+        /**
+         * 创建采集任务
+         * @description 把一条 ``collect.target`` 任务写进队列并立刻返回；真正的采集由 Worker 执行。
+         *
+         *     先查一遍目标机器：指向一台不存在的机器时任务必然失败，不如在提交时就报 404。
+         *     ``run_id`` 缺省由服务端生成：它会拼进 Worker 上的临时目录名，不能交给调用方随便填
+         *     （``collection/jobs.py`` 的 ``_run_id`` 只接受 UUID）。
+         */
+        post: operations["create_collection_task_api_collection_tasks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/collection-tasks/{task_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 采集任务状态 */
+        get: operations["read_collection_task_api_collection_tasks__task_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/collection-tasks/{task_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 取消采集任务
+         * @description 给任务行置上取消标记；只对排队中与执行中的任务有效。
+         *
+         *     取消不会让任务立刻停下：Worker 在两个步骤之间读一次标记（见 ``collection/jobs.py``）。
+         *     取消不算任务失败，任务的最终状态仍由 Worker 写回，界面按采集记录判断这次采集的结果。
+         */
+        post: operations["cancel_collection_task_api_collection_tasks__task_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/collections": {
         parameters: {
             query?: never;
@@ -211,6 +279,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/targets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 目标机器列表
+         * @description 全部已保存的目标机器。按创建时间排序，数量小，不分页。
+         *
+         *     只返回配置（host / port / username / 口令变量名），不返回口令本身——表里也没有能装口令
+         *     的列。连接状态不在这个响应里：本轮不落库，见界面的偏差说明。
+         */
+        get: operations["list_targets_api_targets_get"];
+        put?: never;
+        /**
+         * 新增目标机器
+         * @description 新增一台目标机器。字段校验与拒绝理由由 ``SshTargetDraft`` 给出，不在这层重写。
+         */
+        post: operations["create_target_api_targets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/targets/{target_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 目标机器详情 */
+        get: operations["read_target_api_targets__target_id__get"];
+        /**
+         * 整体替换目标机器
+         * @description 整体替换：提交什么就是什么。
+         *
+         *     不做「只改传入字段」的部分更新——那样调用方会遇到「没传的字段被保留成旧值」的意外，
+         *     而编辑表单本来就该把四个字段全部提交上来。
+         */
+        put: operations["replace_target_api_targets__target_id__put"];
+        post?: never;
+        /**
+         * 删除目标机器
+         * @description 只删 ``ssh_targets`` 这一行，不级联。
+         *
+         *     已经创建的采集任务（``jobs`` 行）与已经导入的诊断记录都保留：删掉一台机器的配置不该让
+         *     历史数据跟着消失。
+         */
+        delete: operations["delete_target_api_targets__target_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/targets/{target_id}/test-connection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 对目标机器做一次只读连接测试
+         * @description 只读测试：读 ``/etc/os-release``、``uname``、``/proc``，不改目标机器的任何配置。
+         */
+        post: operations["test_target_connection_api_targets__target_id__test_connection_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -259,11 +405,58 @@ export interface components {
             unreliable: boolean;
         };
         /**
+         * CollectionAttemptResponse
+         * @description 一次采集尝试：三个阶段的状态与全部操作记录。
+         */
+        CollectionAttemptResponse: {
+            /** Attempt */
+            attempt: number;
+            /** Events */
+            events: components["schemas"]["CollectionEventResponse"][];
+            /** Finished At */
+            finished_at?: string | null;
+            /** Phases */
+            phases: components["schemas"]["CollectionPhaseRecordResponse"][];
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status: string;
+        };
+        /**
+         * CollectionEventResponse
+         * @description 一条采集操作记录。``detail`` 写失败原因或复用说明，是界面展示失败原因的来源之一。
+         */
+        CollectionEventResponse: {
+            /** At */
+            at: string;
+            /** Detail */
+            detail?: string | null;
+            /** Kind */
+            kind: string;
+            /** Phase */
+            phase: string;
+            /** Step */
+            step?: string | null;
+        };
+        /**
          * CollectionMode
          * @description 一次采集的来源。
          * @enum {string}
          */
         CollectionMode: "ssh_collection" | "journal_import" | "bootrec_import";
+        /** CollectionPhaseRecordResponse */
+        CollectionPhaseRecordResponse: {
+            /** Detail */
+            detail?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Phase */
+            phase: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status: string;
+        };
         /** CollectionResponse */
         CollectionResponse: {
             /** Boot Id */
@@ -284,6 +477,67 @@ export interface components {
             resources_reason: string | null;
             /** Source Sha256 */
             source_sha256: string | null;
+        };
+        /**
+         * CollectionTaskFailure
+         * @description 采集没成功时的一句话原因。``phase`` 定位到失败的阶段，与阶段无关时为 null。
+         */
+        CollectionTaskFailure: {
+            /** Message */
+            message: string;
+            /** Phase */
+            phase?: string | null;
+        };
+        /**
+         * CollectionTaskRequest
+         * @description 提交一次采集任务。``target_id`` 必须是已经保存的目标机器。
+         */
+        CollectionTaskRequest: {
+            /**
+             * Run Id
+             * @description 采集任务 id，必须是 UUID；不传时由服务端生成
+             */
+            run_id?: string | null;
+            /**
+             * Target Id
+             * @description 要采集的目标机器 id
+             */
+            target_id: string;
+        };
+        /**
+         * CollectionTaskResponse
+         * @description 一次采集任务（``jobs`` 表里 ``kind = collect.target`` 的一行）的对外形状。
+         */
+        CollectionTaskResponse: {
+            /** Attempts */
+            attempts: number;
+            /** Cancel Requested */
+            cancel_requested: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** @description 采集没成功的可读原因；成功、执行中或取消后清理成功时为 null */
+            failure?: components["schemas"]["CollectionTaskFailure"] | null;
+            /** Kind */
+            kind: string;
+            /** @description 最近一次采集尝试；任务还没开始执行时为 null */
+            latest_attempt?: components["schemas"]["CollectionAttemptResponse"] | null;
+            /** Max Attempts */
+            max_attempts: number;
+            /** Run Id */
+            run_id: string | null;
+            status: components["schemas"]["JobStatus"];
+            /** Target Id */
+            target_id: string | null;
+            /** Task Id */
+            task_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /** CursorResponse */
         CursorResponse: {
@@ -502,6 +756,17 @@ export interface components {
             /** Total */
             total: number;
         };
+        /** Page[CollectionTaskResponse] */
+        Page_CollectionTaskResponse_: {
+            /** Items */
+            items: components["schemas"]["CollectionTaskResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total */
+            total: number;
+        };
         /**
          * RecordKind
          * @description 统一记录的六种数据对象。
@@ -596,6 +861,124 @@ export interface components {
              * @enum {string}
              */
             type: "span";
+        };
+        /**
+         * SshTarget
+         * @description 一台已保存的目标机器。``target_id`` 由仓储生成，创建后不变。
+         */
+        SshTarget: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Host
+             * @description 主机名或 IP 地址
+             */
+            host: string;
+            /**
+             * Password Env Var
+             * @description 存放 SSH 口令的环境变量名；口令本身不入库
+             * @default SAS_SSH_PASSWORD
+             */
+            password_env_var: string;
+            /**
+             * Port
+             * @description SSH 端口
+             * @default 22
+             */
+            port: number;
+            /** Target Id */
+            target_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /**
+             * Username
+             * @description SSH 用户名
+             */
+            username: string;
+        };
+        /**
+         * SshTargetDraft
+         * @description 新增或修改一台目标机器时提交的内容（不含 id 与时间戳）。
+         *
+         *     修改是整体替换：提交什么就是什么，字段缺省值会生效。这样调用方不会遇到「只改了一个字段，
+         *     其它字段被隐式保留成旧值」的意外。
+         */
+        SshTargetDraft: {
+            /**
+             * Host
+             * @description 主机名或 IP 地址
+             */
+            host: string;
+            /**
+             * Password Env Var
+             * @description 存放 SSH 口令的环境变量名；口令本身不入库
+             * @default SAS_SSH_PASSWORD
+             */
+            password_env_var: string;
+            /**
+             * Port
+             * @description SSH 端口
+             * @default 22
+             */
+            port: number;
+            /**
+             * Username
+             * @description SSH 用户名
+             */
+            username: string;
+        };
+        /**
+         * SystemInfoResponse
+         * @description 目标机器在一次连接测试里报出的系统基本信息。取不到的项为 null，不填 0。
+         */
+        SystemInfoResponse: {
+            /** Architecture */
+            architecture?: string | null;
+            /** Boot Id */
+            boot_id?: string | null;
+            /** Cpu Count */
+            cpu_count?: number | null;
+            /** Hostname */
+            hostname: string;
+            /** Kernel Version */
+            kernel_version?: string | null;
+            /** Memory Total Bytes */
+            memory_total_bytes?: number | null;
+            /** Os Release */
+            os_release?: string | null;
+        };
+        /**
+         * TestConnectionFailure
+         * @description 连接测试没成功时的原因。``message`` 已由后端脱敏，界面直接显示，不自己拼文案。
+         */
+        TestConnectionFailure: {
+            /**
+             * Kind
+             * @description connect=连不上，auth=认证失败，timeout=超时，credential=服务端没有配置口令
+             * @enum {string}
+             */
+            kind: "connect" | "auth" | "timeout" | "credential";
+            /** Message */
+            message: string;
+        };
+        /**
+         * TestConnectionResponse
+         * @description 一次连接测试的结果。
+         *
+         *     「连不上」是连接测试的正常结果，不是请求失败，所以失败也用 200 返回：``ok`` 为 false 时
+         *     ``failure`` 有值、``system`` 为 null。
+         */
+        TestConnectionResponse: {
+            failure?: components["schemas"]["TestConnectionFailure"] | null;
+            /** Ok */
+            ok: boolean;
+            system?: components["schemas"]["SystemInfoResponse"] | null;
         };
         /** TimelineStateResponse */
         TimelineStateResponse: {
@@ -708,6 +1091,139 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_collection_tasks_api_collection_tasks_get: {
+        parameters: {
+            query?: {
+                /** @description 只看这台目标机器的任务 */
+                target_id?: string | null;
+                /** @description 只看这个状态的任务 */
+                status?: components["schemas"]["JobStatus"] | null;
+                /** @description 每页条数，1..200 */
+                limit?: number;
+                /** @description 跳过的条数，0..100000 */
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_CollectionTaskResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_collection_task_api_collection_tasks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CollectionTaskRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollectionTaskResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_collection_task_api_collection_tasks__task_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollectionTaskResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_collection_task_api_collection_tasks__task_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollectionTaskResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_collections_api_collections_get: {
         parameters: {
             query?: {
@@ -1104,6 +1620,185 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TracksResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_targets_api_targets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SshTarget"][];
+                };
+            };
+        };
+    };
+    create_target_api_targets_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SshTargetDraft"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SshTarget"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_target_api_targets__target_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SshTarget"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replace_target_api_targets__target_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SshTargetDraft"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SshTarget"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_target_api_targets__target_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_target_connection_api_targets__target_id__test_connection_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestConnectionResponse"];
                 };
             };
             /** @description Validation Error */
