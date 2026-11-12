@@ -17,6 +17,7 @@ import pytest
 from system_analyzer.analyzers.systemd_lifecycle import (
     ANNOTATION_ABNORMAL_EXIT,
     ANNOTATION_LIFECYCLE_INCOMPLETE,
+    ANNOTATION_UNATTRIBUTED,
     PLUGIN_ID,
     SPAN_ACTIVATING,
     SPAN_ACTIVE,
@@ -39,7 +40,14 @@ from system_analyzer.plugins.contracts import (
     PluginKind,
 )
 from system_analyzer.plugins.registry import PluginRegistry, reset_registry
-from test_systemd_lifecycle import BOOT_ID, COLLECTION_ID, FIXTURE, MACHINE_ID, fixture_records
+from test_systemd_lifecycle import (
+    BOOT_ID,
+    COLLECTION_ID,
+    FIXTURE,
+    MACHINE_ID,
+    fixture_records,
+    records_without_structured_unit_fields,
+)
 
 
 class RecordingAccess:
@@ -354,3 +362,26 @@ def test_fixture_is_the_fixed_journal_export_used_by_the_tests() -> None:
     assert FIXTURE.is_file()
     parsed = archive.parse_journal_archive(FIXTURE)
     assert len(parsed.entries) == 13
+
+
+# --- 归属不到 Unit 的消息：报数量与原因，不记到 init.scope 头上 -----------------
+
+
+def test_unattributable_messages_write_a_summary_instead_of_fake_spans() -> None:
+    """旧版 / 第三方转存的 Journal 没有 UNIT=：一条区间都不产出，只报数量与原因。"""
+    records = records_without_structured_unit_fields()
+    access = RecordingAccess(records)
+
+    result = invoke(SystemdLifecycleAnalyzer(), access)
+
+    assert access.appended("span") == []
+    assert access.entity_calls == []  # 没有 Unit 要补实体
+    annotations = access.appended("annotation")
+    assert [record["payload"]["annotation_type"] for record in annotations] == [
+        ANNOTATION_UNATTRIBUTED
+    ]
+    assert result.annotations_written == 1
+    summary = annotations[0]
+    assert summary["entity"] is None
+    assert f"{len(records)} 条生命周期消息缺少结构化 Unit 字段" in summary["payload"]["message"]
+    assert "未产出结论" in summary["payload"]["message"]

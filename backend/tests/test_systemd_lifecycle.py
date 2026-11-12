@@ -11,6 +11,7 @@ Journal 事件导出语义」，而不是重新解析压缩包。
 
 from __future__ import annotations
 
+import copy as _copy
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from system_analyzer.analyzers.systemd_lifecycle import (
     ANNOTATION_LIFECYCLE_INCOMPLETE,
     ANNOTATION_SERVICE_FAILED,
     ANNOTATION_STARTUP_FAILURE,
+    ANNOTATION_UNATTRIBUTED,
     PLUGIN_ID,
     SPAN_ACTIVATING,
     SPAN_ACTIVE,
@@ -731,3 +733,78 @@ def test_a_failure_after_a_change_of_invocation_starts_a_new_segment() -> None:
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     ]
+
+
+# --- 缺少结构化 Unit 字段：不产出结论，只报数量与原因 ------------------------
+
+
+def records_without_structured_unit_fields() -> tuple[dict[str, Any], ...]:
+    """把真实导出里「说的是哪个 Unit」的字段全部去掉，模拟旧版导出与第三方转存。
+
+    systemd v250 之前不用 ``log_struct``，生命周期消息上只剩 ``_SYSTEMD_UNIT``——PID 1 的日志上
+    它是 ``init.scope``，user manager 的日志上是 ``user@1000.service``。这时没有任何可信依据判断
+    这些消息说的是哪个 Unit。
+    """
+    stripped: list[dict[str, Any]] = []
+    for record in real_records():
+        record_copy = _copy.deepcopy(record)
+        fields = record_copy["payload"]["attributes"]["fields"]
+        for name in ("UNIT", "USER_UNIT", "INVOCATION_ID", "USER_INVOCATION_ID"):
+            fields.pop(name, None)
+        # 内容变了，record_id 也要按内容重算：否则这份测试数据自己就违反了 0.2 第 8 节
+        record_copy["record_id"] = compute_record_id(record_copy)
+        stripped.append(record_copy)
+    return tuple(stripped)
+
+
+def test_missing_structured_unit_never_claims_the_systemd_manager_scope() -> None:
+    """拿不到明确的 Unit 时不产出生命周期区间：init.scope 不是「被分析的服务」。"""
+    reconstruction = reconstruct(records_without_structured_unit_fields())
+
+    assert reconstruction.units() == ()
+    assert reconstruction.span_records() == ()
+    assert reconstruction.service_entities() == ()
+
+
+def test_unattributed_messages_are_reported_with_count_and_reason() -> None:
+    """丢掉的消息必须在结果里说清楚：多少条、为什么、证据是哪些原始记录。"""
+    records = records_without_structured_unit_fields()
+    reported = [
+        record
+        for record in reconstruct(records).annotation_records()
+        if record["payload"]["annotation_type"] == ANNOTATION_UNATTRIBUTED
+    ]
+
+    assert len(reported) == 1
+    payload = reported[0]["payload"]
+    assert f"{len(records)} 条生命周期消息缺少结构化 Unit 字段" in payload["message"]
+    assert "未产出结论" in payload["message"]
+    assert payload["evidence_refs"]
+    assert set(payload["evidence_refs"]) <= {record["record_id"] for record in records}
+
+
+def test_fully_attributed_real_journal_reports_nothing_as_unattributed() -> None:
+    """正常路径不能凭空多出这条结论：真实数据每条都带 UNIT=。"""
+    annotations = reconstruct(real_records()).annotation_records()
+
+    assert [
+        record
+        for record in annotations
+        if record["payload"]["annotation_type"] == ANNOTATION_UNATTRIBUTED
+    ] == []
+
+
+def test_sender_unit_is_still_used_when_it_provably_is_the_unit() -> None:
+    """没有 UNIT= 时，发送方不是 systemd 自己的作用域就可以代表目标 Unit。"""
+    records = [
+        journal_event(
+            monotonic_ms=1000,
+            unit="nginx.service",
+            sender_unit="nginx.service",
+            message="Started A high performance web server.",
+        )
+    ]
+
+    (signal,) = journal_signals(records)
+    assert signal.unit == "nginx.service"
+    assert signal.pid == 1  # 发送方就是服务自己，PID／cgroup 属于它

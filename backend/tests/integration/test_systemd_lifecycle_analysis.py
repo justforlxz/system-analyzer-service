@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from sqlalchemy.pool import NullPool
 from system_analyzer.analyzers.systemd_lifecycle import (
     ANNOTATION_LIFECYCLE_INCOMPLETE,
     ANNOTATION_SERVICE_FAILED,
+    ANNOTATION_UNATTRIBUTED,
     PLUGIN_ID,
     SPAN_ACTIVE,
 )
@@ -36,7 +38,7 @@ from system_analyzer.analyzers.systemd_lifecycle_analyzer import (
     MACHINE_ID_OPTION,
     SystemdLifecycleAnalyzer,
 )
-from system_analyzer.domain.bootrec import Record, RecordKind
+from system_analyzer.domain.bootrec import Record, RecordKind, compute_record_id
 from system_analyzer.importers import journal_archive as archive
 from system_analyzer.plugins.contracts import AnalysisRequest, AnalysisResult
 from system_analyzer.plugins.registry import PluginRegistry
@@ -148,6 +150,34 @@ async def import_journal_fixture(engine: AsyncEngine, fixture: Path = FIXTURE) -
     )
     assert outcome.records_written == len(bundle.records)
     return store
+
+
+async def import_old_style_journal(engine: AsyncEngine) -> tuple[DiagnosticStore, Any]:
+    """按旧版 systemd 导出的形状落库：生命周期消息没有 UNIT= / USER_UNIT= / INVOCATION_ID=。
+
+    1.3 的导入校验只验 ``EventPayload`` 的形状，不会拦住这种输入——这正是分析器要自己兜住的情况。
+    """
+    parsed = archive.parse_journal_archive(REAL_FIXTURE)
+    bundle = archive.build_bundle(parsed, source_sha256=archive.archive_digest(REAL_FIXTURE))
+    stripped: list[dict[str, Any]] = []
+    for record in bundle.records:
+        copy = deepcopy(record)
+        fields = copy["payload"]["attributes"]["fields"]
+        for name in ("UNIT", "USER_UNIT", "INVOCATION_ID", "USER_INVOCATION_ID"):
+            fields.pop(name, None)
+        # 内容变了，record_id 要按内容重算：1.1 的写入校验会核对 id 与内容是否一致
+        copy["record_id"] = compute_record_id(copy)
+        stripped.append(copy)
+    store = DiagnosticStore(engine)
+    outcome = await store.import_collection(
+        bundle.collection,
+        bundle.entities,
+        tuple(stripped),
+        source_sha256=bundle.source_sha256,
+        resources=bundle.resources,
+    )
+    assert outcome.records_written == len(stripped)
+    return store, bundle
 
 
 async def run_analysis(
@@ -390,3 +420,29 @@ async def test_real_journal_restarts_are_stored_as_separate_spans(
     ]
     assert len(active) == 4
     assert len({record.payload["attributes"]["invocation_id"] for record in active}) == 4
+
+
+# --- 缺结构化 Unit 字段：报数量与原因，不记到 init.scope 头上 -------------------
+
+
+async def test_old_style_journal_reports_unattributed_messages_not_fake_spans(
+    engine: AsyncEngine, test_database_url: str
+) -> None:
+    """缺 UNIT= 的输入必须产出「多少条没归属、为什么」，而不是挂在 init.scope 上的区间。"""
+    store, bundle = await import_old_style_journal(engine)
+    machine_id = bundle.collection.machine_id
+    boot_id = bundle.collection.boot_id
+
+    result = await run_analysis(test_database_url, machine_id=machine_id, boot_id=boot_id)
+
+    records = await derived_records(store, machine_id=machine_id, boot_id=boot_id)
+    assert [record for record in records if record.kind is RecordKind.SPAN] == []
+    annotations = [record for record in records if record.kind is RecordKind.ANNOTATION]
+    assert [record.payload["annotation_type"] for record in annotations] == [
+        ANNOTATION_UNATTRIBUTED
+    ]
+    assert result.annotations_written == 1
+    assert "条生命周期消息缺少结构化 Unit 字段" in annotations[0].payload["message"]
+    assert annotations[0].entity is None
+    # 产出的记录仍要通过 1.1 的完整性复核
+    assert await store.check_collection_integrity(bundle.collection.collection_id) == []

@@ -63,6 +63,14 @@ ANNOTATION_ABNORMAL_EXIT = "systemd.abnormal_exit"
 ANNOTATION_LIFECYCLE_INCOMPLETE = "systemd.lifecycle_incomplete"
 """证据不足，生命周期不完整；消息固定含「生命周期不完整」四个字。"""
 
+ANNOTATION_UNATTRIBUTED = "systemd.lifecycle_unattributed"
+"""有生命周期消息无法归属到任何 Unit，因此没有产出结论；只报数量、原因与证据。
+
+「认得出是生命周期消息」与「知道它在说哪个 Unit」是两件事。只有前者时不能猜：把消息记到
+``init.scope`` 或 ``user@1000.service`` 会产出一份看起来完整、实际是伪造的生命周期，读者无法
+从数据里看出它是错的。这条结论让「这份数据看不出是哪个服务」变得可见、可查。
+"""
+
 JOURNAL_EVENT_TYPE = "journal.entry"
 """任务 1.4 写给每条 Journal 条目的 ``event_type``。"""
 
@@ -86,6 +94,12 @@ systemd 从 v250 起用 ``log_struct`` 打印生命周期消息，把被操作�
 OBJECT_INVOCATION_FIELDS: tuple[str, ...] = ("INVOCATION_ID", "USER_INVOCATION_ID")
 """与 ``OBJECT_UNIT_FIELDS`` 对应的「这次激活」编号字段。"""
 
+
+MAX_UNATTRIBUTED_EVIDENCE = 20
+"""``systemd.lifecycle_unattributed`` 里最多列出的原始记录条数。
+
+数量本身写进消息正文；证据只列前若干条，避免一次退化输入（几万条消息）把一条结论撑成几百 KB。
+"""
 SENDER_UNIT_FIELDS: tuple[str, ...] = ("_SYSTEMD_UNIT", "_SYSTEMD_USER_UNIT")
 """写日志的进程所属的 Unit。
 
@@ -117,6 +131,13 @@ STATE_ORDER: Mapping[str, int] = {
 
 _FAILED_RESULT = re.compile(r"Failed with result '([^']*)'")
 _MAIN_EXIT = re.compile(r"Main process exited, code=(\w+), status=(\S+)")
+_MANAGER_SCOPE_UNIT = re.compile(r"\A(?:init\.scope|user@[^.]*\.service)\Z")
+"""systemd 自己（PID 1 与 user manager）所在的 Unit。
+
+这几个值出现在 ``_SYSTEMD_UNIT`` / ``_SYSTEMD_USER_UNIT`` 上时只说明「这条日志是 systemd 打的」，
+不说明消息说的是哪个 Unit。拿不到 ``UNIT=`` / ``USER_UNIT=`` 而发送方又落在这里时，就没有任何
+可信依据判断归属，只能不产出结论。
+"""
 
 
 class SignalKind(StrEnum):
@@ -164,6 +185,18 @@ class JournalSignal:
         if self.kind is not SignalKind.MAIN_EXIT:
             return False
         return _exit_is_abnormal(self.exit_code or "", self.exit_status or "")
+
+
+@dataclass(frozen=True, slots=True)
+class _DroppedMessage:
+    """认得出是生命周期消息、却归属不到任何 Unit 的一条原始记录。"""
+
+    collection_id: str
+    machine_id: str
+    boot_id: str
+    record_id: str
+    monotonic_ns: int
+    realtime_ns: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +282,22 @@ class LifecycleConclusion:
 
 
 @dataclass(frozen=True, slots=True)
+class UnattributedLifecycle:
+    """一个采集里「认得出是生命周期消息、却归属不到任何 Unit」的那些原始记录。
+
+    它们没有产出任何区间与结论，只在 ``systemd.lifecycle_unattributed`` 里报出数量与原因：
+    读者要能从结果里区分「这台机器没有这些服务」与「这份数据看不出是哪个服务」。
+    """
+
+    collection_id: str
+    machine_id: str
+    boot_id: str
+    monotonic_ns: int
+    realtime_ns: int | None
+    record_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class StartupDuration:
     """一次激活的启动耗时，供「启动耗时」查询与测试断言使用。"""
 
@@ -290,6 +339,7 @@ class LifecycleReconstruction:
     boot_id: str
     segments: tuple[UnitSegment, ...]
     conclusions: tuple[LifecycleConclusion, ...]
+    unattributed: tuple[UnattributedLifecycle, ...]
 
     def units(self) -> tuple[str, ...]:
         return tuple(sorted({segment.unit for segment in self.segments}))
@@ -387,9 +437,19 @@ class LifecycleReconstruction:
             record for segment in self.segments for record in _segment_span_records(segment)
         )
 
+    def unattributed_records(self) -> tuple[dict[str, Any], ...]:
+        """「归属不到任何 Unit」的汇总结论：每个涉及的采集一条。
+
+        只报数量、原因与证据，不产出任何区间：这些消息没被归到任何服务上，也没有被补成完整区间。
+        """
+        return tuple(_unattributed_record(item) for item in self.unattributed)
+
     def annotation_records(self) -> tuple[dict[str, Any], ...]:
         """分析结论记录（``kind = annotation``），``record_id`` 按 0.2 第 8 节算。"""
-        return tuple(_annotation_record(conclusion) for conclusion in self.conclusions)
+        return (
+            tuple(_annotation_record(conclusion) for conclusion in self.conclusions)
+            + self.unattributed_records()
+        )
 
     def records(self) -> tuple[dict[str, Any], ...]:
         """本次分析要写入的全部记录，区间在前、结论在后。"""
@@ -408,19 +468,46 @@ def journal_signals(
 
     只看 ``journal.entry`` 事件、只看带单调时钟的记录（``clock_domain = boot_monotonic``，
     ``docs/time-base.md`` 第 2 节：只有墙钟的读数不能直接放进 boot 时间轴）、只认标识符是
-    ``systemd`` 的消息。认不出来的消息原样跳过，不猜。
+    ``systemd`` 的消息。认不出来的消息原样跳过，不猜；认得出但归属不到 Unit 的消息也不出现在
+    结果里，它们由 ``journal_scan`` 单独报出来。
+    """
+    return journal_scan(records)[0]
+
+
+def journal_scan(
+    records: Iterable[Record | Mapping[str, Any]],
+) -> tuple[tuple[JournalSignal, ...], tuple[UnattributedLifecycle, ...]]:
+    """把一批统一记录扫成「可归属的生命周期证据」与「归属不到 Unit 的消息」两堆。
+
+    分开是必须的：前者能推出区间与结论，后者只能报数量与原因。把后者塞进前者就是伪造。
     """
     signals: list[JournalSignal] = []
+    dropped: dict[str, list[_DroppedMessage]] = {}
     for raw in records:
         record = raw if isinstance(raw, Record) else Record.model_validate(raw)
-        signal = _journal_signal(record)
-        if signal is not None:
-            signals.append(signal)
+        found = _classify_record(record)
+        if found is None:
+            continue
+        if isinstance(found, _DroppedMessage):
+            dropped.setdefault(found.collection_id, []).append(found)
+            continue
+        signals.append(found)
     signals.sort(key=lambda item: (item.collection_id, item.monotonic_ns, item.record_id))
-    return tuple(signals)
+    return tuple(signals), tuple(
+        UnattributedLifecycle(
+            collection_id=collection_id,
+            machine_id=items[0].machine_id,
+            boot_id=items[0].boot_id,
+            monotonic_ns=items[0].monotonic_ns,
+            realtime_ns=items[0].realtime_ns,
+            record_ids=tuple(item.record_id for item in items),
+        )
+        for collection_id, items in sorted(dropped.items())
+    )
 
 
-def _journal_signal(record: Record) -> JournalSignal | None:
+def _classify_record(record: Record) -> JournalSignal | _DroppedMessage | None:
+    """把一条统一记录分成三种：生命周期证据、认得出但归属不到 Unit 的消息、与本次分析无关。"""
     if record.kind is not RecordKind.EVENT:
         return None
     if record.monotonic_ns is None:
@@ -436,9 +523,6 @@ def _journal_signal(record: Record) -> JournalSignal | None:
     identifier = _text(fields.get("SYSLOG_IDENTIFIER")) or _text(attributes.get("identifier"))
     if identifier != LIFECYCLE_IDENTIFIER:
         return None
-    unit = _object_unit(fields, attributes)
-    if not unit:
-        return None
     classified = classify_message(payload.get("message") or "")
     if classified is None:
         return None
@@ -448,6 +532,18 @@ def _journal_signal(record: Record) -> JournalSignal | None:
     ):
         # 主进程正常退出不是「异常退出」，也不是停止证据（停止由 Stopped／Deactivated 表达）
         return None
+    unit = _object_unit(fields, attributes)
+    if unit is None:
+        # 认得出是生命周期消息，却没有可信依据判断它在说哪个 Unit：不猜、不产出结论，
+        # 由上层把数量、原因与原始记录报出来（见 ANNOTATION_UNATTRIBUTED）。
+        return _DroppedMessage(
+            collection_id=record.collection_id,
+            machine_id=record.machine_id,
+            boot_id=record.boot_id,
+            record_id=record.record_id,
+            monotonic_ns=record.monotonic_ns,
+            realtime_ns=record.realtime_ns,
+        )
     # PID、cgroup 与 _SYSTEMD_INVOCATION_ID 描述的是「谁写了这条日志」。systemd 打印生命周期
     # 消息时写日志的是 PID 1（或 user manager），这些字段指向 init.scope / user@1000.service，
     # 不是被分析的 Unit；只有当日志的发送方就是该 Unit 时才把它们算在它头上。
@@ -483,18 +579,31 @@ def _journal_signal(record: Record) -> JournalSignal | None:
 
 
 def _object_unit(fields: Mapping[str, Any], attributes: Mapping[str, Any]) -> str | None:
-    """这条日志说的是哪个 Unit。
+    """这条日志说的是哪个 Unit；拿不到可信依据时返回 ``None``。
 
-    真实 Journal 里，systemd 自己打印的生命周期消息带结构化字段 ``UNIT=``（user manager 是
-    ``USER_UNIT=``），而 ``_SYSTEMD_UNIT`` 指向写日志的进程所属的 Unit——PID 1 的日志上它恒为
-    ``init.scope``，user manager 的日志上是 ``user@1000.service``。优先用 ``UNIT=`` /
-    ``USER_UNIT=``，只有拿不到时才退回 ``_SYSTEMD_UNIT``（此时日志的发送方就是该 Unit）。
+    ``UNIT=`` / ``USER_UNIT=`` 是 systemd 明确写下的「被操作的 Unit」，永远优先。拿不到它们时，
+    只能退到发送方标识（``_SYSTEMD_USER_UNIT`` / ``_SYSTEMD_UNIT``，导入时也归一化进
+    ``attributes["unit"]``）——而 systemd 自己打印生命周期消息时，发送方是 PID 1（``init.scope``）
+    或 user manager（``user@<uid>.service``）。这些作用域只说明「日志是谁打的」，不说明「说的是哪个
+    Unit」，此时返回 ``None``：宁可没有结论，也不把这些消息记到 systemd 自己头上。
     """
     for name in OBJECT_UNIT_FIELDS:
         value = _text(fields.get(name))
         if value is not None:
             return value
-    return _text(attributes.get("unit")) or _text(fields.get("_SYSTEMD_UNIT"))
+    for candidate in (
+        _text(fields.get("_SYSTEMD_USER_UNIT")),
+        _text(attributes.get("unit")),
+        _text(fields.get("_SYSTEMD_UNIT")),
+    ):
+        if candidate is not None and not _is_manager_scope(candidate):
+            return candidate
+    return None
+
+
+def _is_manager_scope(unit: str) -> bool:
+    """这个 Unit 是不是 systemd 自己的作用域（PID 1 或 user manager）。"""
+    return _MANAGER_SCOPE_UNIT.match(unit) is not None
 
 
 def classify_message(message: str) -> tuple[SignalKind, dict[str, Any]] | None:
@@ -577,8 +686,11 @@ def reconstruct(records: Iterable[Record | Mapping[str, Any]]) -> LifecycleRecon
 
     同一 Unit 的不同激活按「新的开始证据」「INVOCATION_ID 变化」「终态之后再出现开始证据」
     切开，绝不合并：``INVOCATION_ID`` 是 systemd 给每一次激活分配的编号，它变了就是另一次运行。
+
+    归属不到 Unit 的生命周期消息不参与重建，只汇总进 ``unattributed``：没有可信依据时，
+    「没有结论」是诚实的，「给一份记到 ``init.scope`` 头上的结论」不是。
     """
-    signals = journal_signals(records)
+    signals, unattributed = journal_scan(records)
     grouped: dict[tuple[str, str], list[JournalSignal]] = {}
     for signal in signals:
         grouped.setdefault((signal.collection_id, signal.unit), []).append(signal)
@@ -595,13 +707,13 @@ def reconstruct(records: Iterable[Record | Mapping[str, Any]]) -> LifecycleRecon
     conclusions.sort(
         key=lambda item: (item.collection_id, item.monotonic_ns, item.annotation_type, item.unit)
     )
-    machine_id = signals[0].machine_id if signals else ""
-    boot_id = signals[0].boot_id if signals else ""
+    identity = signals[0] if signals else (unattributed[0] if unattributed else None)
     return LifecycleReconstruction(
-        machine_id=machine_id,
-        boot_id=boot_id,
+        machine_id=identity.machine_id if identity is not None else "",
+        boot_id=identity.boot_id if identity is not None else "",
         segments=tuple(segments),
         conclusions=tuple(conclusions),
+        unattributed=unattributed,
     )
 
 
@@ -1040,6 +1152,39 @@ def _annotation_record(conclusion: LifecycleConclusion) -> dict[str, Any]:
     return {"record_id": compute_record_id(body), **body}
 
 
+def _unattributed_record(item: UnattributedLifecycle) -> dict[str, Any]:
+    """「N 条生命周期消息归属不到 Unit」的 annotation 记录。"""
+    evidence = list(item.record_ids[:MAX_UNATTRIBUTED_EVIDENCE])
+    message = (
+        f"本采集有 {len(item.record_ids)} 条生命周期消息缺少结构化 Unit 字段"
+        "（UNIT= / USER_UNIT=），未产出结论：发送方标识（_SYSTEMD_UNIT / _SYSTEMD_USER_UNIT）是"
+        " systemd 自己的作用域（init.scope、user@<uid>.service），不能证明它就是消息所说的那个"
+        f" Unit。证据列前 {len(evidence)} 条原始记录：" + "、".join(evidence)
+    )
+    body: dict[str, Any] = {
+        "kind": RecordKind.ANNOTATION.value,
+        "machine_id": item.machine_id,
+        "boot_id": item.boot_id,
+        "collection_id": item.collection_id,
+        "source_plugin": PLUGIN_ID,
+        "stream_id": STREAM_ANNOTATIONS,
+        "monotonic_ns": item.monotonic_ns,
+        "realtime_ns": item.realtime_ns,
+        "clock_domain": ClockDomain.BOOT_MONOTONIC.value,
+        # 这条结论说的不是某个 Unit，因此不挂实体：挂上任何一个都是给人一个错的对象去查
+        "entity": None,
+        "payload": {
+            "annotation_type": ANNOTATION_UNATTRIBUTED,
+            "analyzer": PLUGIN_ID,
+            "severity": "warning",
+            "message": message,
+            "confidence": None,
+            "evidence_refs": evidence,
+        },
+    }
+    return {"record_id": compute_record_id(body), **body}
+
+
 # ----------------------------------------------------------------------
 # 小工具
 # ----------------------------------------------------------------------
@@ -1074,6 +1219,7 @@ __all__ = [
     "ANNOTATION_LIFECYCLE_INCOMPLETE",
     "ANNOTATION_SERVICE_FAILED",
     "ANNOTATION_STARTUP_FAILURE",
+    "ANNOTATION_UNATTRIBUTED",
     "INCOMPLETE_REASON_TEXT",
     "PLUGIN_ID",
     "SPAN_ACTIVATING",
@@ -1083,9 +1229,11 @@ __all__ = [
     "LifecycleReconstruction",
     "SignalKind",
     "StartupDuration",
+    "UnattributedLifecycle",
     "UnitSegment",
     "UnitStateAt",
     "classify_message",
+    "journal_scan",
     "journal_signals",
     "reconstruct",
 ]

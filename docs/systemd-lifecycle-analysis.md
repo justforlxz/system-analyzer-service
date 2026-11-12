@@ -94,11 +94,22 @@ Unit 的生命周期区间，识别启动耗时、启动失败与异常退出，
 只看 `_SYSTEMD_UNIT` 的后果：一个 boot 里 3000 多个服务被合并进 `init.scope` 与
 `user@1000.service` 两个伪 Unit，产出的区间与结论全部挂在错误的对象上。
 
-取值顺序：`UNIT=` → `USER_UNIT=` → `_SYSTEMD_UNIT`（后者只在拿不到结构化字段时使用，那时日志的
-发送方就是该 Unit）。
+取值顺序：
+
+1. `UNIT=` → `USER_UNIT=`：systemd 明确写下的「被操作的 Unit」，直接用。
+2. 拿不到时退回发送方标识（`_SYSTEMD_USER_UNIT` → 导入归一化的 `unit` → `_SYSTEMD_UNIT`），
+   **但只在它不属于 systemd 自己的作用域时**才算数：`init.scope`、`user@<uid>.service` 这几类
+   值只说明「日志是 systemd 打的」，不说明消息说的是哪个 Unit。
+3. 两条都不成立时**不产出任何区间与结论**，由 `systemd.lifecycle_unattributed` 报出条数、原因与
+   原始记录。项目原则是「数据缺失必须明确标识，不得伪造」：把消息记到 `init.scope` 头上，会得到
+   一份看起来完整、实际是编造的生命周期，而读者无法从数据里看出它是错的。
 
 同理，「这次激活的编号」也取对象作用域的字段：`INVOCATION_ID=` → `USER_INVOCATION_ID=`；
 只有当日志的发送方就是该 Unit 时才退回 `_SYSTEMD_INVOCATION_ID`。
+
+一个不显眼但正确的情形：system manager 启动 user manager 时，消息上的 `UNIT=` 就是
+`user@1000.service`（`Starting User Manager for UID 1000...`）。这时它是被操作的 Unit，照常产出
+区间——「不把 systemd 的作用域当成服务」与「真的在分析 user@1000.service 这个 Unit」是两件事。
 
 ### 3.3 PID 与 cgroup 只在发送方就是该 Unit 时才算在它头上
 
@@ -185,9 +196,9 @@ Unit 的生命周期区间，识别启动耗时、启动失败与异常退出，
 
 ## 6. 输出之二：分析结论（annotation）
 
-四条结论类型，`source_plugin` 与 `payload.analyzer` 都是 `systemd.lifecycle`，
-`stream_id = analysis.systemd`，`entity = service:<unit>`，`evidence_refs` 非空且只指向本次分析
-用到的 Journal 事件记录（`record_id`）：
+五条结论类型，`source_plugin` 与 `payload.analyzer` 都是 `systemd.lifecycle`，
+`stream_id = analysis.systemd`，`evidence_refs` 非空且只指向本次分析用到的 Journal 事件记录
+（`record_id`）。前四条的 `entity = service:<unit>`；第五条不挂实体（见下）。
 
 | `annotation_type` | `severity` | 什么时候产生 | 证据 |
 | --- | --- | --- | --- |
@@ -195,6 +206,13 @@ Unit 的生命周期区间，识别启动耗时、启动失败与异常退出，
 | `systemd.startup_failure` | `error` | 失败发生在运行开始之前，且确有启动尝试的证据（观测到 `Starting`，或失败本身就是 `Failed to start`） | `Starting` 记录 + 失败记录 |
 | `systemd.abnormal_exit` | `error` | 主进程非正常退出 | 该 `Main process exited` 记录（另有失败记录时一并写上） |
 | `systemd.lifecycle_incomplete` | `warning` | 该段证据不足（见第 7 节） | 该段全部证据记录 |
+| `systemd.lifecycle_unattributed` | `warning` | 一个采集里有认得出、但归属不到 Unit 的生命周期消息（见第 3.2 节） | 该采集被丢弃的记录（最多列 20 条，总数写在消息里） |
+
+`systemd.lifecycle_unattributed` 是唯一**不挂实体**的结论：它说的不是某个 Unit，挂上任何一个都会
+给读者一个错的对象去查。每个涉及的采集只产生一条，消息形如
+「本采集有 N 条生命周期消息缺少结构化 Unit 字段（UNIT= / USER_UNIT=），未产出结论：……」，
+证据列前若干条记录 id，总数与原因都在正文里。正常数据（每条消息都带 `UNIT=` / `USER_UNIT=`）不会
+出现这条结论。
 
 消息是给人读的中文句子，例如：
 
@@ -364,6 +382,19 @@ cd .. && scripts/dev-db.sh stop
 | user manager 的 Unit | 各段带自己的 `USER_INVOCATION_ID`，终态 `failed` |
 | 区间属性 | 只有 `unit` / `invocation_id` / `startup_duration_ns`，没有 `pid` / `cgroup`（发送方是 PID 1） |
 
+### 13.3 旧格式模拟数据：去掉 `UNIT=` / `USER_UNIT=` / `INVOCATION_ID=`
+
+用同一份 `real-boot.journal.gz`，把这三个字段全部去掉后重算 `record_id`（`UNIT=` 没了，剩下的只有
+发送方 `_SYSTEMD_UNIT` = `init.scope` / `user@1000.service`），这是旧版导出与第三方转存的形状：
+
+| 断言 | 期望 |
+| --- | --- |
+| Unit 集合 | 空：`init.scope`、`user@1000.service` 都不出现 |
+| 区间 | 0 条 span，`service_entities()` 为空 |
+| 结论 | 只有 1 条 `systemd.lifecycle_unattributed`，`entity` 为 `null` |
+| 消息 | 含「N 条生命周期消息缺少结构化 Unit 字段」与「未产出结论」，N 等于被丢弃的消息条数 |
+| 证据 | `evidence_refs` 非空，且都是输入里的 `record_id` |
+
 ## 14. 偏差清单
 
 1. **不新增数据对象**：按 PL 在任务交接里的要求，生命周期区间落在 `span`、结论落在 `annotation`，
@@ -388,3 +419,7 @@ cd .. && scripts/dev-db.sh stop
    都是手工拼的样本，不是真实 Journal**。第一版本文档曾把后者称作「真实 Journal 数据」，是错的；
    本次新增 `tests/fixtures/systemd_lifecycle/real-boot.journal.gz`（本机 `journalctl -o export`
    原样截取），真实字段布局才算被测试覆盖。
+8. **systemd v250 之前的 Journal 没有 `UNIT=` / `USER_UNIT=`**，因此按第 3.2 节只会产出
+   `systemd.lifecycle_unattributed`，不产出任何生命周期区间。这是有意为之：从消息文本里反推 Unit
+   名（`Started nginx.service - ...`）是另一套规则与另一套误判风险，要单独评估，不在本任务范围内。
+   本机 systemd 262 的真实导出仍照常重建全部 Unit（第 13.2 节）。
