@@ -31,6 +31,7 @@ def collect(self, request, context):                        # 同步方法，跑
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -98,6 +99,19 @@ class SshClient(Protocol):
     ) -> CommandResult:
         """执行一条远端命令。``check`` 为真时非 0 退出码抛 ``SshCommandError``。"""
 
+    async def run_privileged(
+        self,
+        command: str,
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109  与 run() 一样，超时由实现内部的 asyncio.wait_for 落实
+        check: bool = True,
+    ) -> CommandResult:
+        """以 root 身份执行一条远端命令（``sudo -S``，口令经 stdin 送入）。
+
+        目标机器的配置只有 root 能改，而口令是 ``SshConnectionConfig`` 里的那一份，
+        所以提权只能发生在这一层：调用方拿不到口令，也就不必把它搬来搬去。
+        """
+
     async def upload(self, local_path: Path | str, remote_path: str) -> None:
         """把本地文件传到目标机器。"""
 
@@ -164,7 +178,6 @@ class AsyncSshClient:
         """执行一条远端命令。超时抛 ``SshTimeoutError``，非 0 退出（``check`` 为真）抛
         ``SshCommandError``；连接层面的失败按三类归并。"""
         limit = timeout if timeout is not None else self._config.command_timeout
-        where = "执行远端命令"
         try:
             completed = await asyncio.wait_for(self._connection.run(command, check=False), limit)
         except Exception as exc:
@@ -172,24 +185,72 @@ class AsyncSshClient:
                 exc,
                 host=self._config.host,
                 port=self._config.port,
-                where=where,
+                where="执行远端命令",
                 timeout=limit,
             ) from exc
+        return self._command_result(
+            command,
+            completed.stdout or "",
+            completed.stderr or "",
+            completed.exit_status,
+            check=check,
+        )
 
+    async def run_privileged(
+        self,
+        command: str,
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109  与 run() 一样，超时由 asyncio.wait_for 落实
+        check: bool = True,
+    ) -> CommandResult:
+        """以 root 身份执行一条远端命令，错误分类与 ``run()`` 完全一致。
+
+        口令经 stdin 送给 ``sudo -S``，不出现在命令行里（``ps`` 看不到），也不写进目标机器
+        的磁盘。一次调用只跑一条 sudo 命令：``sudo`` 的凭据缓存不能指望，同一行串联两条
+        命令时第二条仍会再要一次口令。
+
+        结果只看退出码：目标机器的 sudo 会把「验证成功」打到 stdout，标准输出不是干净数据，
+        要取数据请让命令写到暂存文件，再用 ``run()`` 以普通身份读回来。
+
+        命令可能在读口令之前就退出（``sudo`` 直接拒绝、``install`` 立刻报错），那时写 stdin
+        会拿到已经关闭的管道。那不算失败：结论由退出码决定，所以写入失败只忽略，
+        继续读输出与退出码。
+        """
+        limit = timeout if timeout is not None else self._config.command_timeout
+        remote_command = f"sudo -S -p '' {command}"
+        try:
+            process = await self._connection.create_process(remote_command)
+            with suppress(OSError, asyncssh.Error):
+                process.stdin.write(f"{self._config.password}\n")
+                process.stdin.write_eof()
+            stdout, stderr = await asyncio.wait_for(process.communicate(), limit)
+        except Exception as exc:
+            raise classify_ssh_error(
+                exc,
+                host=self._config.host,
+                port=self._config.port,
+                where="以 root 执行远端命令",
+                timeout=limit,
+            ) from exc
+        return self._command_result(
+            remote_command, stdout or "", stderr or "", process.exit_status, check=check
+        )
+
+    def _command_result(
+        self, command: str, stdout: str, stderr: str, exit_status: int | None, *, check: bool
+    ) -> CommandResult:
+        """把一次执行的结果收成 ``CommandResult``；``check`` 为真且退出码非 0 时抛异常。"""
         result = CommandResult(
-            command=command,
-            stdout=completed.stdout or "",
-            stderr=completed.stderr or "",
-            exit_status=completed.exit_status,
+            command=command, stdout=stdout, stderr=stderr, exit_status=exit_status
         )
         if check and not result.ok:
-            detail = result.stderr.strip().replace("\n", " ")[:STDERR_IN_MESSAGE_LIMIT]
+            detail = stderr.strip().replace("\n", " ")[:STDERR_IN_MESSAGE_LIMIT]
             raise SshCommandError(
-                f"远端命令失败：{self._config.endpoint} 退出码 {result.exit_status}"
+                f"远端命令失败：{self._config.endpoint} 退出码 {exit_status}"
                 f"（{detail or '没有 stderr 输出'}）",
                 command=command,
-                exit_status=result.exit_status,
-                stderr=result.stderr,
+                exit_status=exit_status,
+                stderr=stderr,
             )
         return result
 

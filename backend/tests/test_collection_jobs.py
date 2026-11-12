@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from collection_fakes import FakeConnector
+from system_analyzer.collection.environment import ENVIRONMENT_COMMAND
 from system_analyzer.collection.jobs import (
     COLLECTION_JOB_KIND,
     CollectionJobFailed,
@@ -28,6 +29,7 @@ from system_analyzer.collection.states import AttemptStatus, CollectionPhase, Ph
 from system_analyzer.core.config import Settings
 from system_analyzer.jobs.queue import Job
 from system_analyzer.remote.errors import SshConnectError
+from system_analyzer.remote.probe import SYSTEM_INFO_COMMAND
 from system_analyzer.worker import main as worker_main
 
 TARGET = "uos-152"
@@ -184,8 +186,10 @@ async def test_retry_resumes_from_the_record_in_the_job_payload(tmp_path: Path) 
     assert outcome.attempt.resumed_from == 1
     assert outcome.attempt.phase(PRE).status is PhaseStatus.REUSED
     assert outcome.attempt.phase(POST).status is PhaseStatus.SUCCEEDED
-    # 复用的 Pre 没有重新检查环境
-    assert connector.commands_of(TARGET) == []
+    # 复用的 Pre 没有重新检查环境，也没有重新下载备份；本次尝试只剩 Post 的恢复与清理
+    pre_commands = {SYSTEM_INFO_COMMAND, ENVIRONMENT_COMMAND}
+    assert not [command for command in connector.commands_of(TARGET) if command in pre_commands]
+    assert connector.downloads_of(TARGET) == []
     # 上一次尝试留下改动，由本次的 Post 按备份恢复
     assert connector.files[TARGET][CONFIG_PATH] == ORIGINAL_CONFIG
 

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from collection_fakes import FakeConnector
+from system_analyzer.collection.environment import ENVIRONMENT_COMMAND
 from system_analyzer.collection.orchestrator import CollectionOutcome, run_collection
 from system_analyzer.collection.plan import (
     BACKUP_DIR_NAME,
@@ -21,6 +22,7 @@ from system_analyzer.collection.plan import (
 )
 from system_analyzer.collection.record import CollectionRecord, EventKind
 from system_analyzer.collection.states import AttemptStatus, CollectionPhase, PhaseStatus
+from system_analyzer.remote.probe import SYSTEM_INFO_COMMAND
 
 TARGET = "uos-152"
 CONFIG_PATH = "/etc/lightdm/lightdm.conf"
@@ -283,7 +285,10 @@ async def test_rerunning_a_phase_does_not_duplicate_side_effects(tmp_path: Path)
 
     await run(connector, tmp_path, plans=plans, options=options, previous=first.record)
 
-    assert connector.commands_of(TARGET) == commands_after_first
+    # 第二次尝试只跑 Post（恢复与清理）：它不再做环境检查，也不再下载备份
+    second_attempt_commands = connector.commands_of(TARGET)[len(commands_after_first) :]
+    pre_commands = {SYSTEM_INFO_COMMAND, ENVIRONMENT_COMMAND}
+    assert not [command for command in second_attempt_commands if command in pre_commands]
     assert connector.downloads_of(TARGET) == downloads_after_first
     assert downloads_after_first == [CONFIG_PATH], "第一次确实备份过一次"
 
