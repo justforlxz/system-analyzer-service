@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from system_analyzer.collection import staging
 from system_analyzer.collection.accounting import enable_temporary_accounting
 from system_analyzer.collection.context import PhaseContext
+from system_analyzer.collection.delivery import DELIVERY_OPTION, deliver_from_context
 from system_analyzer.collection.environment import (
     EnvironmentReport,
     ensure_supported,
@@ -204,8 +205,46 @@ async def stop_sampling(_ctx: PhaseContext) -> None:
     """占位：停止采样循环，由任务 3.4 填入。当前不改变目标机器。"""
 
 
-async def gather_collected_data(_ctx: PhaseContext) -> None:
-    """占位：把采集结果与原始文件回传到中心服务器，由任务 3.7 填入。当前不改变目标机器。"""
+async def gather_collected_data(ctx: PhaseContext) -> None:
+    """把采集结果打包成 ``.bootrec``，回传并导入（任务 3.7）。
+
+    本步骤是 Post 阶段的一部分，后面的「恢复环境」依赖它在失败时不要直接终止整个阶段。
+    因此回传或导入失败时先执行一次 ``restore_configuration``，再把原始失败抛出去：
+    - 恢复动作与回传成败互不影响，目标机器不会因为网络中断停在半改状态；
+    - 采集尝试仍然记为失败，任务会按重试策略再跑，远端文件在导入成功前不会被删除。
+
+    Post 阶段整体超时时，编排用取消结束本步骤，取消抛出的 ``CancelledError`` 不属于
+    ``Exception``。这里捕获 ``BaseException`` 后再恢复环境，避免回传耗时把恢复动作一起跳过。
+
+    这次尝试没有任何可打包的数据时（例如 In Progress 还没有真实采集动作），不生成空包，
+    并在记录里区分「任务没有开启回传」与「开启了回传但没有数据」。
+    """
+    try:
+        report = await deliver_from_context(ctx)
+    except BaseException as error:
+        ctx.data["delivery"] = {
+            "status": "failed",
+            "error": f"{type(error).__name__}: {error}",
+        }
+        try:
+            await restore_configuration(ctx)
+        except Exception as restore_error:
+            raise RuntimeError(
+                f"回传或导入失败（{error}），并且环境恢复也失败（{restore_error}）"
+            ) from restore_error
+        raise
+    if report is not None:
+        ctx.data["delivery"] = report.as_mapping()
+    elif DELIVERY_OPTION not in ctx.options:
+        ctx.data["delivery"] = {
+            "status": "skipped",
+            "reason": "任务没有配置 options.delivery，本次不回传",
+        }
+    else:
+        ctx.data["delivery"] = {
+            "status": "no_data",
+            "reason": "本次采集没有可打包的数据",
+        }
 
 
 async def restore_configuration(ctx: PhaseContext) -> None:
