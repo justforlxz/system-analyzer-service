@@ -83,8 +83,12 @@ def settings() -> Settings:
 
 
 def test_default_handlers_registers_import_and_collection_tasks() -> None:
-    """两类任务同时注册：导入任务不能被采集处理器顶掉。"""
-    assert set(worker_main.default_handlers()) == {"import.source", COLLECTION_JOB_KIND}
+    """三类任务同时注册：导入、采集与分析都不能被彼此顶掉。"""
+    assert set(worker_main.default_handlers()) == {
+        "import.source",
+        COLLECTION_JOB_KIND,
+        "analysis.run",
+    }
 
 
 def test_collection_handlers_registers_the_collection_job_kind(tmp_path: Path) -> None:

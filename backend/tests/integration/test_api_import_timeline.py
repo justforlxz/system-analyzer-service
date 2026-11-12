@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
+from uuid import UUID
 
 import httpx
 import pytest
@@ -23,9 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sample_bootrec import load_sample
 from system_analyzer.api.app import create_app
 from system_analyzer.core.config import get_settings
-from system_analyzer.domain.bootrec import MetricStreamEntity
+from system_analyzer.domain.bootrec import MetricStreamEntity, RecordKind
 from system_analyzer.jobs.queue import JobQueue
 from system_analyzer.storage import DiagnosticStore, ImportStatus
+from system_analyzer.worker.analysis_jobs import analysis_handlers
 from system_analyzer.worker.import_jobs import import_handlers
 from system_analyzer.worker.runner import Worker
 
@@ -80,16 +82,26 @@ def client(app) -> httpx.AsyncClient:
     )
 
 
-async def run_one_job(engine: AsyncEngine, app) -> bool:
-    """跑一次 Worker 的领取循环；有任务被处理返回 True。"""
+async def run_one_job(engine: AsyncEngine, app, job_id: str) -> bool:
+    """跑到指定导入任务结束；期间的自动分析任务也由同一个 Worker 处理。"""
     settings = get_settings()
+    queue = JobQueue(engine)
     worker = Worker(
-        JobQueue(engine),
-        import_handlers(settings, app.state.plugins),
+        queue,
+        {
+            **import_handlers(settings, app.state.plugins),
+            **analysis_handlers(settings, app.state.plugins),
+        },
         worker_id="integration-worker",
         poll_interval_seconds=0,
     )
-    return await worker.run_once()
+    for _ in range(10):
+        record = await queue.get(UUID(job_id))
+        if record is not None and record.status.value in {"succeeded", "failed"}:
+            return True
+        if not await worker.run_once():
+            return False
+    return False
 
 
 async def test_upload_import_and_query_timeline(engine: AsyncEngine, app) -> None:
@@ -105,7 +117,7 @@ async def test_upload_import_and_query_timeline(engine: AsyncEngine, app) -> Non
         assert submitted["plugin_id"] == "journal.archive"
 
         # 第 2 步：导入（Worker 领取任务并在后台执行）
-        assert await run_one_job(engine, app) is True
+        assert await run_one_job(engine, app, submitted["job_id"]) is True
 
         status = await http.get(f"/api/imports/{submitted['job_id']}")
         assert status.status_code == 200, status.text
@@ -164,7 +176,7 @@ async def test_uploading_the_same_archive_twice_is_idempotent(engine: AsyncEngin
             "/api/imports", files={"file": ("boot.journal.gz", payload, "application/gzip")}
         )
         assert first.status_code == 202
-        assert await run_one_job(engine, app) is True
+        assert await run_one_job(engine, app, first.json()["job_id"]) is True
         first_status = (await http.get(f"/api/imports/{first.json()['job_id']}")).json()
         collection_id = first_status["collection"]["collection_id"]
 
@@ -172,14 +184,18 @@ async def test_uploading_the_same_archive_twice_is_idempotent(engine: AsyncEngin
             "/api/imports", files={"file": ("boot.journal.gz", payload, "application/gzip")}
         )
         assert second.status_code == 202
-        assert await run_one_job(engine, app) is True
+        assert await run_one_job(engine, app, second.json()["job_id"]) is True
         second_status = (await http.get(f"/api/imports/{second.json()['job_id']}")).json()
 
     assert second_status["job"]["status"] == "succeeded"
     assert second_status["job"]["result"]["records_written"] == 0
     assert second_status["job"]["result"]["skipped_reason"]
     assert second_status["collection"]["collection_id"] == collection_id
-    assert await DiagnosticStore(engine).count_records(collection_id) == JOURNAL_RECORDS
+    # 分析任务会在同一个采集里追加区间与结论记录；这里只核对导入的 Journal 事件没有被重复写入。
+    store = DiagnosticStore(engine)
+    events = await store.list_records_in_collection(collection_id, kinds=[RecordKind.EVENT])
+    assert len(events) == JOURNAL_RECORDS
+    assert await store.count_records(collection_id) > JOURNAL_RECORDS
 
 
 async def test_timeline_distinguishes_unavailable_from_no_data(engine: AsyncEngine, app) -> None:

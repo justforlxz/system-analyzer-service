@@ -15,6 +15,15 @@ export type MetricItem = components["schemas"]["MetricItemResponse"];
 export type TrackStatus = components["schemas"]["TrackStatus"];
 export type TrackStateResponse = components["schemas"]["TrackStateResponse"];
 
+export type ServiceListResponse = components["schemas"]["ServiceListResponse"];
+export type ServiceSummary = components["schemas"]["ServiceSummaryResponse"];
+export type ServiceDiagnosticsResponse = components["schemas"]["ServiceDiagnosticsResponse"];
+export type DiagnosticFact = components["schemas"]["FactResponse"];
+export type DiagnosticLifecycleSpan = components["schemas"]["LifecycleSpanResponse"];
+export type DiagnosticJournalEntry = components["schemas"]["JournalEntryResponse"];
+export type DiagnosticAnnotation = components["schemas"]["AnnotationResponse"];
+export type DiagnosticResourceSeries = components["schemas"]["ResourceSeriesResponse"];
+
 export type SshTarget = components["schemas"]["SshTarget"];
 export type SshTargetDraft = components["schemas"]["SshTargetDraft"];
 export type TestConnectionResponse = components["schemas"]["TestConnectionResponse"];
@@ -282,5 +291,53 @@ export function fetchState(
 ): Promise<TimelineStateResponse> {
   return getJson<TimelineStateResponse>(
     `${timelinePath(machineId, bootId)}/state?monotonic_ns=${monotonicNs}`,
+  );
+}
+
+// ----------------------------------------------------------------------
+// 服务诊断（任务 4.3）
+// ----------------------------------------------------------------------
+
+function diagnosticsPath(machineId: string, bootId: string): string {
+  return `/api/machines/${encodeURIComponent(machineId)}/boots/${encodeURIComponent(
+    bootId,
+  )}/diagnostics`;
+}
+
+/** 这次启动里可以诊断的服务：来自分析写下的 service 实体与记录上的服务实体。 */
+export function fetchDiagnosticServices(
+  machineId: string,
+  bootId: string,
+  signal?: AbortSignal,
+): Promise<ServiceListResponse> {
+  return requestJson<ServiceListResponse>(`${diagnosticsPath(machineId, bootId)}/services`, {
+    signal,
+  });
+}
+
+export type ServiceDiagnosticsOptions = {
+  atNs?: number | null;
+  journalWindowNs?: number | null;
+  signal?: AbortSignal;
+};
+
+/** 指定服务在游标时刻的状态、身份信息、关联 Journal、资源与分析结论。 */
+export function fetchServiceDiagnostics(
+  machineId: string,
+  bootId: string,
+  entityId: string,
+  options: ServiceDiagnosticsOptions = {},
+): Promise<ServiceDiagnosticsResponse> {
+  const params = new URLSearchParams();
+  if (typeof options.atNs === "number") params.set("at_ns", String(options.atNs));
+  if (typeof options.journalWindowNs === "number") {
+    params.set("journal_window_ns", String(options.journalWindowNs));
+  }
+  const query = params.toString();
+  return requestJson<ServiceDiagnosticsResponse>(
+    `${diagnosticsPath(machineId, bootId)}/services/${encodeURIComponent(entityId)}${
+      query ? `?${query}` : ""
+    }`,
+    { signal: options.signal },
   );
 }

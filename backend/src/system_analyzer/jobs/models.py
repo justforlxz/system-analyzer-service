@@ -13,6 +13,13 @@ SOURCE_IMPORT_JOB_KIND = "import.source"
 API 提交导入时写入这个类型，Worker 按它分发到 ``worker.import_jobs`` 里的处理器。
 """
 
+ANALYSIS_JOB_KIND = "analysis.run"
+"""分析任务的类型名。
+
+导入任务成功后由 Worker 入队，处理器在 ``worker/analysis_jobs.py``；payload 给出机器、启动与
+采集号，处理器按启动选择内置分析器并经 ``PluginRegistry.invoke`` 执行。
+"""
+
 
 class JobStatus(StrEnum):
     """后台任务状态，与 ``jobs.status`` 列的取值一一对应。"""

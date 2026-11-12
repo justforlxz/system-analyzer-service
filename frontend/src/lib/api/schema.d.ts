@@ -228,6 +228,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/machines/{machine_id}/boots/{boot_id}/diagnostics/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 这次启动里的服务列表 */
+        get: operations["list_services_api_machines__machine_id__boots__boot_id__diagnostics_services_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/machines/{machine_id}/boots/{boot_id}/diagnostics/services/{entity_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 指定时刻的服务状态与诊断证据 */
+        get: operations["read_service_diagnostics_api_machines__machine_id__boots__boot_id__diagnostics_services__entity_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/machines/{machine_id}/boots/{boot_id}/timeline/cursor": {
         parameters: {
             query?: never;
@@ -361,6 +395,27 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AnnotationResponse */
+        AnnotationResponse: {
+            /** Analyzer */
+            analyzer: string;
+            /** Annotation Type */
+            annotation_type: string;
+            /** Confidence */
+            confidence: number | null;
+            /** Evidence */
+            evidence: components["schemas"]["EvidenceResponse"][];
+            /** Evidence Missing */
+            evidence_missing: boolean;
+            /** Message */
+            message: string | null;
+            /** Monotonic Ns */
+            monotonic_ns: number | null;
+            /** Record Id */
+            record_id: string;
+            /** Severity */
+            severity: string;
+        };
         /** Body_submit_import_api_imports_post */
         Body_submit_import_api_imports_post: {
             /**
@@ -588,6 +643,30 @@ export interface components {
              */
             type: "event";
         };
+        /** EvidenceResponse */
+        EvidenceResponse: {
+            /** Found */
+            found: boolean;
+            /** Kind */
+            kind: string | null;
+            /** Message */
+            message: string | null;
+            /** Monotonic Ns */
+            monotonic_ns: number | null;
+            /** Record Id */
+            record_id: string;
+        };
+        /** FactResponse */
+        FactResponse: {
+            /** Monotonic Ns */
+            monotonic_ns: number | null;
+            /** Note */
+            note: string | null;
+            /** Record Id */
+            record_id: string | null;
+            /** Value */
+            value: string | null;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -693,6 +772,69 @@ export interface components {
          * @enum {string}
          */
         JobStatus: "queued" | "running" | "succeeded" | "failed";
+        /** JournalContextResponse */
+        JournalContextResponse: {
+            /** Items */
+            items: components["schemas"]["JournalEntryResponse"][];
+            /** Total */
+            total: number;
+            /** Window End Ns */
+            window_end_ns: number;
+            /** Window Start Ns */
+            window_start_ns: number;
+        };
+        /** JournalEntryResponse */
+        JournalEntryResponse: {
+            /** Attributes */
+            attributes: {
+                [key: string]: unknown;
+            };
+            /** Collection Id */
+            collection_id: string;
+            /** From Evidence */
+            from_evidence: boolean;
+            /** Identifier */
+            identifier: string | null;
+            /** Message */
+            message: string | null;
+            /** Monotonic Ns */
+            monotonic_ns: number;
+            /** Priority */
+            priority: string | null;
+            /** Realtime Ns */
+            realtime_ns: number | null;
+            /** Record Id */
+            record_id: string;
+            /** Unit */
+            unit: string | null;
+        };
+        /** LifecycleSpanResponse */
+        LifecycleSpanResponse: {
+            /** Attributes */
+            attributes: {
+                [key: string]: unknown;
+            };
+            /** Cgroup */
+            cgroup: string | null;
+            /** Collection Id */
+            collection_id: string;
+            /** End Is Declared */
+            end_is_declared: boolean;
+            /** End Monotonic Ns */
+            end_monotonic_ns: number | null;
+            /** Invocation Id */
+            invocation_id: string | null;
+            /** Monotonic Ns */
+            monotonic_ns: number | null;
+            /** Pid */
+            pid: string | null;
+            /** Record Id */
+            record_id: string;
+            /** Span Type */
+            span_type: string;
+            /** State */
+            state: string | null;
+        };
         /** MachineResponse */
         MachineResponse: {
             /** Architecture */
@@ -817,12 +959,119 @@ export interface components {
             /** Offset */
             offset: number;
         };
+        /** ResourceLatestResponse */
+        ResourceLatestResponse: {
+            /** Entity */
+            entity: string;
+            /** Monotonic Ns */
+            monotonic_ns: number;
+            /** Name */
+            name: string;
+            /** Record Id */
+            record_id: string;
+            /** Unit */
+            unit: string;
+            /** Value */
+            value: number;
+        };
+        /** ResourcePointResponse */
+        ResourcePointResponse: {
+            /** Monotonic Ns */
+            monotonic_ns: number;
+            /** Value */
+            value: number;
+        };
+        /** ResourceSeriesResponse */
+        ResourceSeriesResponse: {
+            /** Entity */
+            entity: string;
+            /** Name */
+            name: string;
+            /** Points */
+            points: components["schemas"]["ResourcePointResponse"][];
+            /** Unit */
+            unit: string;
+        };
         /** ResourceStatusResponse */
         ResourceStatusResponse: {
             /** Available */
             available: boolean | null;
             /** Reasons */
             reasons: string[];
+        };
+        /** ResourceUsageResponse */
+        ResourceUsageResponse: {
+            /** At Ns */
+            at_ns: number;
+            /** Latest */
+            latest: components["schemas"]["ResourceLatestResponse"][];
+            /** Note */
+            note: string | null;
+            /** Series */
+            series: components["schemas"]["ResourceSeriesResponse"][];
+            /** Unavailable */
+            unavailable: components["schemas"]["UnavailableResourceResponse"][];
+        };
+        /** ServiceDiagnosticsResponse */
+        ServiceDiagnosticsResponse: {
+            /** Annotations */
+            annotations: components["schemas"]["AnnotationResponse"][];
+            /** At Ns */
+            at_ns: number;
+            /** Boot Id */
+            boot_id: string;
+            /** Entity */
+            entity: string;
+            /** Identity */
+            identity: {
+                [key: string]: components["schemas"]["FactResponse"];
+            };
+            journal: components["schemas"]["JournalContextResponse"];
+            /** Lifecycle */
+            lifecycle: components["schemas"]["LifecycleSpanResponse"][];
+            /** Machine Id */
+            machine_id: string;
+            resources: components["schemas"]["ResourceUsageResponse"];
+            state: components["schemas"]["ServiceStateResponse"];
+            /** Uncertain */
+            uncertain: components["schemas"]["UncertaintyResponse"][];
+            /** Unit */
+            unit: string;
+        };
+        /** ServiceListResponse */
+        ServiceListResponse: {
+            /** Boot Id */
+            boot_id: string;
+            /** Machine Id */
+            machine_id: string;
+            /** Services */
+            services: components["schemas"]["ServiceSummaryResponse"][];
+        };
+        /** ServiceStateResponse */
+        ServiceStateResponse: {
+            /** Note */
+            note: string | null;
+            /** Record Id */
+            record_id: string | null;
+            /** Since Ns */
+            since_ns: number | null;
+            /** Stale */
+            stale: boolean;
+            /** State */
+            state: string;
+        };
+        /** ServiceSummaryResponse */
+        ServiceSummaryResponse: {
+            /** Annotation Count */
+            annotation_count: number;
+            /** Entity */
+            entity: string;
+            /** Lifecycle End Ns */
+            lifecycle_end_ns: number | null;
+            /** Lifecycle Start Ns */
+            lifecycle_start_ns: number | null;
+            /** Unit */
+            unit: string;
         };
         /** SpanItemResponse */
         SpanItemResponse: {
@@ -1068,6 +1317,24 @@ export interface components {
             window_end_ns: number | null;
             /** Window Start Ns */
             window_start_ns: number | null;
+        };
+        /** UnavailableResourceResponse */
+        UnavailableResourceResponse: {
+            /** Entity */
+            entity: string;
+            /** Name */
+            name: string;
+            /** Reason */
+            reason: string;
+            /** Unit */
+            unit: string;
+        };
+        /** UncertaintyResponse */
+        UncertaintyResponse: {
+            /** Field */
+            field: string;
+            /** Note */
+            note: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -1509,6 +1776,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BootResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_services_api_machines__machine_id__boots__boot_id__diagnostics_services_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                machine_id: string;
+                boot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_service_diagnostics_api_machines__machine_id__boots__boot_id__diagnostics_services__entity_id__get: {
+        parameters: {
+            query?: {
+                /** @description 时间游标（boot 内纳秒）；不传用最早时刻 */
+                at_ns?: number | null;
+                /** @description 关联 Journal 在游标前后各取多长时间，单位纳秒 */
+                journal_window_ns?: number;
+            };
+            header?: never;
+            path: {
+                machine_id: string;
+                boot_id: string;
+                entity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceDiagnosticsResponse"];
                 };
             };
             /** @description Validation Error */

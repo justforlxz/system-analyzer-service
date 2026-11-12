@@ -176,6 +176,14 @@ async function BootPicker() {
                   {boot.machineId}
                 </Link>
                 <span className="font-mono text-xs text-slate-500">启动 {boot.bootId}</span>
+                <Link
+                  className="text-xs text-slate-600 underline"
+                  href={`/diagnostics?machine_id=${encodeURIComponent(
+                    boot.machineId,
+                  )}&boot_id=${encodeURIComponent(boot.bootId)}`}
+                >
+                  服务诊断
+                </Link>
               </div>
               <ul className="mt-2 space-y-1 text-xs text-slate-600">
                 {boot.collections.map((collection) => (
