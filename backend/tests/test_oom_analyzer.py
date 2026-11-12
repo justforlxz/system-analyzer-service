@@ -230,7 +230,7 @@ def test_kernel_oom_line_gives_pid_and_process_from_its_own_message() -> None:
     ],
 )
 def test_other_kernel_oom_wordings_are_recognised(message: str, pid: int, process: str) -> None:
-    kill = detect_kill(journal_event(message, monotonic_ns=1_000))
+    kill = detect_kill(journal_event(message, monotonic_ns=1_000, fields={"_TRANSPORT": "kernel"}))
 
     assert kill is not None
     assert kill.source == "kernel"
@@ -268,6 +268,79 @@ def test_unrelated_error_lines_are_not_kills() -> None:
     )
 
     assert detect_kill(record) is None
+
+
+def test_kernel_oom_text_from_a_non_kernel_source_is_not_an_oom_fact() -> None:
+    """转发 dmesg 原文的服务不是受害者：不能算内核 OOM，也不能拿它自己的 Unit 做归属。"""
+    quoted = journal_event(
+        "Out of memory: Killed process 4310 (firefox) total-vm:2846920kB "
+        "(quoted from dmesg for the report)",
+        monotonic_ns=1_000_000_000,
+        fields={"_TRANSPORT": "journal", "_SYSTEMD_UNIT": "sysreport.service"},
+        entity="service:sysreport.service",
+    )
+
+    assert detect_kill(quoted) is None
+    assert plan_annotations([quoted]) == []
+
+
+def test_kernel_oom_is_recognised_from_either_kernel_source_field() -> None:
+    """认来源的两个字段：`_TRANSPORT=kernel` 或 `SYSLOG_IDENTIFIER=kernel`，命中一个就够。"""
+    by_transport = journal_event(KERNEL_OOM, monotonic_ns=1_000, fields={"_TRANSPORT": "kernel"})
+    by_identifier = journal_event(
+        KERNEL_OOM, monotonic_ns=1_000, fields={"SYSLOG_IDENTIFIER": "kernel"}
+    )
+    from_stdout = journal_event(
+        KERNEL_OOM,
+        monotonic_ns=1_000,
+        fields={"_TRANSPORT": "stdout", "SYSLOG_IDENTIFIER": "report"},
+    )
+
+    assert detect_kill(by_transport) is not None
+    assert detect_kill(by_identifier) is not None
+    assert detect_kill(from_stdout) is None
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {"fields": "not-a-mapping"},
+        "not-a-mapping",
+    ],
+)
+def test_malformed_record_is_skipped_and_the_rest_still_produce_conclusions(
+    attributes: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """一条结构不对的记录不能让同批其它记录的分析结果一起丢掉，跳过它并记下原因。"""
+    normal = journal_event(KERNEL_OOM, monotonic_ns=2_000_000_000, fields={"_TRANSPORT": "kernel"})
+    bad_body: dict[str, Any] = {
+        "kind": RecordKind.EVENT.value,
+        "machine_id": MACHINE_ID,
+        "boot_id": BOOT_ID,
+        "collection_id": f"journal-import:{MACHINE_ID}:{BOOT_ID}",
+        "source_plugin": "manual.fake",
+        "stream_id": "journal.entries",
+        "monotonic_ns": 1_000_000_000,
+        "realtime_ns": 1_794_000_000_000_000_000,
+        "clock_domain": "boot_monotonic",
+        "entity": None,
+        "payload": {
+            "event_type": "journal.entry",
+            "severity": "error",
+            "message": KERNEL_OOM,
+            "attributes": attributes,
+        },
+    }
+    bad = Record.model_validate({"record_id": compute_record_id(bad_body), **bad_body})
+
+    access = FakeAnalysisData([bad, normal])
+    with caplog.at_level("WARNING"):
+        result = run_analyzer([bad, normal], data=access)
+
+    assert result.annotations_written == 1
+    assert [item["payload"]["evidence_refs"][0] for item in access.written] == [normal.record_id]
+    assert bad.record_id in caplog.text
+    assert "不是对象" in caplog.text
 
 
 # ---------------------------------------------------------------------------
