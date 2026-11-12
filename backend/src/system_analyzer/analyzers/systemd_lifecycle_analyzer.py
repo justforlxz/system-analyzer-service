@@ -124,7 +124,7 @@ class SystemdLifecycleAnalyzer(PluginBase):
             records = [record for record in records if _record_id(record) in wanted]
 
         reconstruction = reconstruct(records)
-        if not reconstruction.segments:
+        if not reconstruction.segments and not reconstruction.unattributed:
             # 没有任何可用的 Journal 生命周期证据：这是「确实没有数据」，不是失败
             return AnalysisResult(annotations_written=0)
         return AnalysisResult(annotations_written=_write(data, reconstruction))
@@ -139,11 +139,13 @@ def _write(data: LifecycleDataAccess, reconstruction: LifecycleReconstruction) -
     结论条数是 0，不是重复计数）。
     """
     entities = reconstruction.service_entities()
-    for collection_id in _collection_ids(reconstruction):
-        _count(
-            _require_synchronous(data.ensure_entities, collection_id, entities),
-            "ensure_entities",
-        )
+    if entities:
+        # 一条 Unit 都没重建出来时没有实体可补，也不该为了一次纯汇总去动实体表
+        for collection_id in _collection_ids(reconstruction):
+            _count(
+                _require_synchronous(data.ensure_entities, collection_id, entities),
+                "ensure_entities",
+            )
     for collection_id, batch in _by_collection(reconstruction.span_records()).items():
         _require_synchronous(data.append_records, collection_id, batch)
     written = 0
