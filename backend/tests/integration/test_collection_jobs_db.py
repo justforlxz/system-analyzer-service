@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,6 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from collection_fakes import FakeConnector, RecordingSshClient
+from system_analyzer.collection.environment import ENVIRONMENT_COMMAND
 from system_analyzer.collection.jobs import (
     COLLECTION_JOB_KIND,
     collection_handlers,
@@ -32,6 +34,7 @@ from system_analyzer.collection.states import AttemptStatus, CollectionPhase, Ph
 from system_analyzer.core.config import Settings
 from system_analyzer.jobs.models import JobStatus
 from system_analyzer.jobs.queue import JobQueue
+from system_analyzer.remote.probe import SYSTEM_INFO_COMMAND
 from system_analyzer.worker.runner import Worker
 
 pytestmark = pytest.mark.integration
@@ -290,7 +293,10 @@ async def test_retry_reuses_succeeded_phase_from_stored_record(
     phases = {phase["phase"]: phase["status"] for phase in second["phases"]}
     assert phases[CollectionPhase.PRE.value] == PhaseStatus.REUSED.value
     assert phases[CollectionPhase.POST.value] == PhaseStatus.SUCCEEDED.value
-    assert connector.commands_of(TARGET) == [], "复用的阶段不再执行环境检查"
+    # 复用的 Pre 不再执行环境检查、也不再下载备份；本次尝试只剩 Post 的恢复与清理
+    pre_commands = {SYSTEM_INFO_COMMAND, ENVIRONMENT_COMMAND}
+    assert not [command for command in connector.commands_of(TARGET) if command in pre_commands]
+    assert connector.downloads_of(TARGET) == []
     assert connector.files[TARGET][CONFIG_PATH] == ORIGINAL_CONFIG
 
 
@@ -339,3 +345,63 @@ def collection_with_succeeded_pre(run_id: str) -> dict[str, Any]:
 
 def _json(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+async def test_preparation_record_is_stored_and_honours_file_attributes(
+    engine: AsyncEngine, queue: JobQueue, test_database_url: str, tmp_path: Path
+) -> None:
+    """准备与回滚的记录要能存进任务行再读回来：权限、属主、校验和、改过哪些文件。
+
+    这一条同时验证「改动前已存在」的恢复形态：写回的不只是内容，还有原来的 ``mode`` 与
+    ``uid`` / ``gid``。假客户端模拟一台 ``/etc`` 下文件属于 root 的机器。
+    """
+    connector = make_connector()
+    handlers = make_handlers(test_database_url, connector, tmp_path)
+    job_id = await queue.enqueue(
+        COLLECTION_JOB_KIND, {"target_id": TARGET, "options": {"backup_paths": [CONFIG_PATH]}}
+    )
+
+    worker = Worker(queue, handlers, worker_id="worker-integration")
+    assert await worker.run_once() is True
+
+    status, attempts, last_error = await job_status(engine, job_id)
+    assert (status, attempts, last_error) == (JobStatus.SUCCEEDED.value, 1, None)
+
+    collection = await collection_record(engine, job_id)
+    data = collection["attempts"][0]["data"]
+    backup = data["backup"]["files"][CONFIG_PATH]
+    assert backup["existed"] is True
+    assert (backup["mode"], backup["uid"], backup["gid"]) == ("644", 0, 0)
+    assert backup["checksum"] == hashlib.sha256(ORIGINAL_CONFIG).hexdigest()
+    # 临时记账用的是 drop-in，记录里写明路径与打开了什么
+    assert data["accounting"]["applied"] is True
+    assert data["accounting"]["settings"] == {"DefaultIOAccounting": "yes"}
+    assert [item["path"] for item in data["changes"]] == [data["accounting"]["path"]]
+    # 环境检查的结论也在记录里
+    assert data["environment"]["cgroup_version"] == "2"
+    assert data["environment"]["privileged"] is True
+    # 目标机器恢复原样：内容与属性都没变，临时片段与暂存目录都没了
+    assert connector.files[TARGET][CONFIG_PATH] == ORIGINAL_CONFIG
+    assert connector.modes_of(TARGET)[CONFIG_PATH] == "644"
+    assert not [path for path in connector.files[TARGET] if path.startswith("/var/tmp/")]
+
+
+async def test_privileged_install_is_used_for_files_under_etc(
+    engine: AsyncEngine, queue: JobQueue, test_database_url: str, tmp_path: Path
+) -> None:
+    """``/etc`` 下的改动一律走提权命令：装临时片段、删临时片段各一条，没有直接上传。
+
+    假客户端的 ``upload`` 只写得到暂存目录；目标路径只能由提权 ``install`` 落成。
+    """
+    connector = make_connector()
+    handlers = make_handlers(test_database_url, connector, tmp_path)
+    await queue.enqueue(COLLECTION_JOB_KIND, {"target_id": TARGET})
+
+    worker = Worker(queue, handlers, worker_id="worker-integration")
+    assert await worker.run_once() is True
+
+    privileged = connector.privileged_commands_of(TARGET)
+    assert any(command.startswith("install -m 644 -o 0 -g 0 ") for command in privileged)
+    assert privileged.count("systemctl daemon-reload") == 2
+    # 直接上传的目标全是暂存目录里的文件，没有一个 /etc 路径
+    assert all(path.startswith("/var/tmp/") for path in connector.uploads_of(TARGET))

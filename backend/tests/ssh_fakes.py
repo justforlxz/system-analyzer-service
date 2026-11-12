@@ -73,10 +73,24 @@ async def fake_ssh_server(
     password: str = TEST_PASSWORD,
     handler: EchoHandler = echo_command,
     accept_public_key: bool = False,
+    input_log: list[str] | None = None,
 ) -> AsyncIterator[FakeSshServer]:
-    """在 ``127.0.0.1`` 上随机端口起一个假 SSH 服务端，退出时关闭。"""
+    """在 ``127.0.0.1`` 上随机端口起一个假 SSH 服务端，退出时关闭。
+
+    给了 ``input_log`` 时，服务端会把每条命令收到的 stdin 全读出来追加进去：
+    提权命令靠 stdin 送口令，这条通道要能被断言。
+    """
+
+    async def read_stdin(process: asyncssh.SSHServerProcess) -> str:
+        """读一次 stdin。没送数据也没关闭时等一秒后当作「没有输入」，不让测试卡住。"""
+        try:
+            return await asyncio.wait_for(process.stdin.read(4096), 1.0)
+        except TimeoutError:
+            return ""
 
     async def run_command(process: asyncssh.SSHServerProcess) -> None:
+        if input_log is not None:
+            input_log.append(await read_stdin(process))
         try:
             outcome = handler(process.command)
             stdout, stderr, status = await outcome if asyncio.iscoroutine(outcome) else outcome
@@ -140,6 +154,7 @@ class FakeSshClient:
         run_error: BaseException | None = None,
     ) -> None:
         self.commands: list[str] = []
+        self.privileged_commands: list[str] = []
         self.uploads: list[tuple[str, str]] = []
         self.downloads: list[tuple[str, str]] = []
         self.closed = False
@@ -154,6 +169,19 @@ class FakeSshClient:
         check: bool = True,
     ) -> CommandResult:
         self.commands.append(command)
+        return self._respond(command)
+
+    async def run_privileged(
+        self,
+        command: str,
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109  与 SshClient 协议签名保持一致
+        check: bool = True,
+    ) -> CommandResult:
+        self.privileged_commands.append(command)
+        return self._respond(command)
+
+    def _respond(self, command: str) -> CommandResult:
         if self._run_error is not None:
             raise self._run_error
         if self._run_result is not None:

@@ -55,6 +55,46 @@ async def test_run_returns_output_and_exit_status(tmp_path: Path) -> None:
     assert result.command == "hostname"
 
 
+async def test_run_privileged_sends_the_password_on_stdin(tmp_path: Path) -> None:
+    """提权走 ``sudo -S``，口令从 stdin 进去：命令本身只有 ``sudo -S -p '' <命令>``。"""
+    standard_inputs: list[str] = []
+
+    async with fake_ssh_server(tmp_path, input_log=standard_inputs) as server:
+        async with await AsyncSshClient.connect(config(server.port)) as client:
+            result = await client.run_privileged("systemctl daemon-reload")
+
+    assert result.command == "sudo -S -p '' systemctl daemon-reload"
+    assert result.stdout == "echo:sudo -S -p '' systemctl daemon-reload\n"
+    assert standard_inputs == [f"{TEST_PASSWORD}\n"]
+
+
+async def test_run_privileged_reports_a_refusing_sudo(tmp_path: Path) -> None:
+    """``sudo`` 拒绝时与普通命令一样抛 ``SshCommandError``：调用方只看异常类型。"""
+
+    async def refusing(command: str) -> tuple[str, str, int]:
+        return "", "需要密码\n", 1
+
+    async with fake_ssh_server(tmp_path, handler=refusing) as server:
+        async with await AsyncSshClient.connect(config(server.port)) as client:
+            with pytest.raises(SshCommandError) as caught:
+                await client.run_privileged("true")
+
+    assert caught.value.exit_status == 1
+    assert "需要密码" in caught.value.stderr
+    assert TEST_PASSWORD not in str(caught.value)
+
+
+async def test_run_privileged_keeps_run_output_clean(tmp_path: Path) -> None:
+    """普通命令不带 stdin：提权通道是独立的，不会给每条命令都塞口令。"""
+    standard_inputs: list[str] = []
+
+    async with fake_ssh_server(tmp_path, input_log=standard_inputs) as server:
+        async with await AsyncSshClient.connect(config(server.port)) as client:
+            await client.run("hostname")
+
+    assert standard_inputs == [""]
+
+
 async def test_non_zero_exit_raises_command_error_by_default(tmp_path: Path) -> None:
     async def failing(command: str) -> tuple[str, str, int]:
         return "", "没法执行\n", 3
