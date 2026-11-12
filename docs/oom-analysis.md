@@ -47,6 +47,13 @@ Journal 导入写好，`payload.attributes.derived_from = "journal"`、
 记录当作 OOM 证据，但找 Unit 线索时仍看整个 boot。跨 boot 的关联按 `docs/time-base.md` 第 3.2 节
 禁止，插件按 `(machine_id, boot_id)` 分组后各自计算，不把一个 boot 的结论套到另一个上。
 
+**结构不对的记录跳过，不拖垮整批。** `payload.attributes` 与 `payload.attributes.fields` 是自由结构
+（1.3 只校验 `EventPayload`），用户上传的 `.bootrec` 能带形状不对的记录进来，例如
+`attributes.fields` 是字符串。这类记录在分组前就被剔除，并写一条带 `record_id` 与原因的
+WARNING 日志；同批其它记录照常出结论，整次分析不会变成 `PluginExecutionError`。
+用例：`test_malformed_record_is_skipped_and_the_rest_still_produce_conclusions`（两种形状各一条，
+断言正常那条仍出结论、日志里出现坏记录的 `record_id` 与原因）。
+
 ## 2. 识别：两类 OOM 的原文规则
 
 规则是确定的文本匹配，不引入机器学习推断。
@@ -66,6 +73,20 @@ Out of memory: Killed process 4310 (firefox) total-vm:2846920kB, anon-rss:180480
 Memory cgroup out of memory: Killed process 77 (java) total-vm:1024kB
 Out of memory: Kill process 1234 (postgres) score 900 or sacrifice child
 ```
+
+**文本匹配之后还要核对来源。** 只有内核自己写的记录才可能是内核 OOM 事实：
+
+| 字段 | 取值 | 说明 |
+| --- | --- | --- |
+| `payload.attributes.fields._TRANSPORT` | `kernel` | journald 给内核消息打的来源 |
+| `payload.attributes.fields.SYSLOG_IDENTIFIER` | `kernel` | 同上；两个字段命中一个即可 |
+
+两个字段都不是 `kernel` 的记录**不产生结论**，也**不允许**用这条记录自己的 `_SYSTEMD_UNIT` 做归属。
+理由：自检报告、容器运行时、诊断工具会把 dmesg 原文打进自己的日志，这类记录是
+`_TRANSPORT=journal` / `syslog` / `stdout`，把转发者当成受害者会把 OOM 挂到无关服务名下，而且
+`confidence` 还会取最高值——归属错了比不归属更糟。用例：
+`test_kernel_oom_text_from_a_non_kernel_source_is_not_an_oom_fact`（上面那条转发记录的素材 → 0 条结论）、
+`test_kernel_oom_is_recognised_from_either_kernel_source_field`。
 
 ### 2.2 systemd-oomd
 

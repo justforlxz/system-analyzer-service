@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -53,6 +54,8 @@ from system_analyzer.plugins.contracts import (
     PluginKind,
     PluginSpec,
 )
+
+logger = logging.getLogger(__name__)
 
 PLUGIN_ID = "oom.analyzer"
 CAPABILITY = "system.oom"
@@ -174,7 +177,14 @@ def detect_kill(record: Record) -> OomKill | None:
         return None
 
     kernel = _KERNEL_KILL.search(message)
+    kernel = _KERNEL_KILL.search(message)
     if kernel is not None:
+        # 只有内核自己写的记录才可能是「内核 OOM 事实」。转发或监控服务（自检报告、容器运行时、
+        # 诊断工具）会把 dmesg 原文打进自己的日志，来源字段是 journal / syslog / stdout，
+        # 这时既不能当成 OOM 事实，也不能拿那个服务自己的 `_SYSTEMD_UNIT` 当受害者 Unit：
+        # 归属错了比不归属更糟。
+        if not _is_kernel_source(record):
+            return None
         unit = _field(record, "unit", "_SYSTEMD_UNIT")
         return OomKill(
             source="kernel",
@@ -182,13 +192,12 @@ def detect_kill(record: Record) -> OomKill | None:
             pid=int(kernel.group("pid")),
             process=kernel.group("process").strip(),
             cgroup=_field(record, "cgroup", "_SYSTEMD_CGROUP"),
-            # 内核那一行由内核写，通常不带 Unit 字段（`_TRANSPORT=kernel`，没有 cgroup 归属）。
-            # 这一行确实带了 Unit 时它就是同一行的直接证据；没带就留空，由调用方按时间接近补。
+            # 内核那一行由内核写，不带 cgroup 归属，通常也没有 Unit 字段；万一这一行确实带了，
+            # 它就是同一行的直接证据；没带就留空，由调用方按时间接近补。
             unit=unit,
             unit_field="payload.attributes.unit（原始字段 _SYSTEMD_UNIT）" if unit else None,
             quote=kernel.group(0),
         )
-
     identifier = _field(record, "identifier", "SYSLOG_IDENTIFIER")
     if identifier != "systemd-oomd":
         return None
@@ -226,6 +235,11 @@ def plan_annotations(
     groups: dict[tuple[str, str], list[Record]] = {}
     for record in records:
         if record.kind is not RecordKind.EVENT:
+            continue
+        malformed = _malformed_reason(record)
+        if malformed is not None:
+            # 跳过并记下原因：同批其它记录照常出结论，不让一条坏记录把整次分析拖失败。
+            logger.warning("跳过结构不对的事件记录 %s：%s", record.record_id, malformed)
             continue
         groups.setdefault((record.machine_id, record.boot_id), []).append(record)
 
@@ -388,9 +402,10 @@ def _evidence_sentence(kill: OomKill, *, unit: str | None, unit_field: str | Non
     ]
     if kill.source == "systemd-oomd":
         sentences.append("、payload.attributes.identifier=systemd-oomd")
-    elif kill.record.payload.get("attributes", {}).get("fields", {}).get("_TRANSPORT"):
-        transport = kill.record.payload["attributes"]["fields"]["_TRANSPORT"]
-        sentences.append(f"、payload.attributes.fields._TRANSPORT={transport}")
+    else:
+        transport = _field(kill.record, "transport", "_TRANSPORT")
+        if transport is not None:
+            sentences.append(f"、payload.attributes.fields._TRANSPORT={transport}")
     if unit is not None and unit_field is not None:
         sentences.append(f"；Unit {unit} 由{unit_field}给出")
     if kill.pid is not None:
@@ -423,6 +438,35 @@ def _field(record: Record, name: str, journal_name: str) -> str | None:
         value = fields.get(journal_name)
         if isinstance(value, str) and value.strip():
             return value.strip()
+    return None
+
+
+def _is_kernel_source(record: Record) -> bool:
+    """这条记录是不是内核自己写的。
+
+    journald 给内核消息打 ``_TRANSPORT=kernel`` 与 ``SYSLOG_IDENTIFIER=kernel``；转发 dmesg 原文的
+    服务（自检报告、诊断工具）是 ``journal`` / ``syslog`` / ``stdout``，不能混为一类。
+    """
+    return "kernel" in {
+        _field(record, "transport", "_TRANSPORT"),
+        _field(record, "identifier", "SYSLOG_IDENTIFIER"),
+    }
+
+
+def _malformed_reason(record: Record) -> str | None:
+    """记录的结构不对时给出原因，结构正常返回 ``None``。
+
+    ``attributes`` 与 ``attributes.fields`` 是自由结构（1.3 只校验 ``EventPayload``），
+    用户上传的 ``.bootrec`` 能带形状不对的记录进来。一条坏记录不应该让同批其它记录的分析结果
+    一起丢掉，所以调用方跳过它并记下原因，而不是让整次分析失败。
+    """
+    attributes = record.payload.get("attributes")
+    if attributes is not None and not isinstance(attributes, Mapping):
+        return f"payload.attributes 不是对象，实际是 {type(attributes).__name__}"
+    if isinstance(attributes, Mapping):
+        fields = attributes.get("fields")
+        if fields is not None and not isinstance(fields, Mapping):
+            return f"payload.attributes.fields 不是对象，实际是 {type(fields).__name__}"
     return None
 
 
