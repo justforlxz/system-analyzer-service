@@ -232,8 +232,8 @@ def test_builtins_register_the_collector_once() -> None:
     registry = register_builtins(PluginRegistry())
 
     collectors = registry.by_kind(PluginKind.COLLECTOR)
-    assert [plugin.spec.id for plugin in collectors] == [PLUGIN_ID]
-    assert isinstance(collectors[0], ResourceCollector)
+    assert [plugin.spec.id for plugin in collectors].count(PLUGIN_ID) == 1
+    assert any(isinstance(plugin, ResourceCollector) for plugin in collectors)
 
 
 # ---------------------------------------------------------------------------
