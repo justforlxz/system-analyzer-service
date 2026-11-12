@@ -11,6 +11,7 @@ API 进程与 Worker 进程都调用 ``register_builtins``，不允许在任意�
 
 from system_analyzer.analyzers.oom import OomAnalyzer
 from system_analyzer.analyzers.systemd_lifecycle_analyzer import SystemdLifecycleAnalyzer
+from system_analyzer.collectors.resources import ResourceCollector
 from system_analyzer.importers.bootrec_importer import BootrecImporter
 from system_analyzer.importers.journal_archive_importer import JournalArchiveImporter
 from system_analyzer.plugins.contracts import Plugin
@@ -25,6 +26,8 @@ BUILTIN_PLUGINS: tuple[Plugin, ...] = (
     SystemdLifecycleAnalyzer(),
     # 2.2：OOM 与进程异常退出分析。
     OomAnalyzer(),
+    # 3.4：远程 CPU、内存、磁盘 I/O 与 Unit / cgroup 维度资源采集。
+    ResourceCollector(),
 )
 """内置插件清单。
 
