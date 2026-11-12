@@ -1,0 +1,7 @@
+{
+  "machine_id": "machine:uos-PC",
+  "hostname": "uos-PC",
+  "os_release": "UOS Desktop 25 Professional",
+  "kernel_version": "6.6.0-1-amd64",
+  "architecture": "x86_64"
+}

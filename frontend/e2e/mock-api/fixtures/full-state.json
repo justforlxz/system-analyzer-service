@@ -1,0 +1,186 @@
+{
+  "machine_id": "machine:uos-PC",
+  "boot_id": "3f1c9a52-8f0e-4a10-9b1c-2b7d5c3a6e11",
+  "monotonic_ns": 3000000000,
+  "tracks": [
+    {
+      "track_id": "event:systemd:systemd.units:service:nginx.service",
+      "kind": "event",
+      "entity": "service:nginx.service",
+      "status": "available",
+      "unavailable_reason": null,
+      "metric": null,
+      "spans": [],
+      "last_event": {
+        "type": "event",
+        "record_id": "32b47d0f93dbf627d655ef0537ef6d48",
+        "collection_id": "collection:full-0001",
+        "monotonic_ns": 1200000000,
+        "realtime_ns": 1794009601200000000,
+        "entity": "service:nginx.service",
+        "source_plugin": "systemd",
+        "stream_id": "systemd.units",
+        "event_type": "systemd.unit.started",
+        "severity": "info",
+        "message": "Started A high performance web server and a reverse proxy server.",
+        "attributes": { "unit": "nginx.service", "invocation_id": "b1d0e7f2a1c34f9c" }
+      }
+    },
+    {
+      "track_id": "event:systemd:systemd.units:service:postgresql.service",
+      "kind": "event",
+      "entity": "service:postgresql.service",
+      "status": "available",
+      "unavailable_reason": null,
+      "metric": null,
+      "spans": [],
+      "last_event": {
+        "type": "event",
+        "record_id": "48d25e31e121b7eaccfadae07b3c1617",
+        "collection_id": "collection:full-0001",
+        "monotonic_ns": 900000000,
+        "realtime_ns": 1794009600900000000,
+        "entity": "service:postgresql.service",
+        "source_plugin": "systemd",
+        "stream_id": "systemd.units",
+        "event_type": "systemd.unit.started",
+        "severity": "info",
+        "message": "Started PostgreSQL RDBMS.",
+        "attributes": { "unit": "postgresql.service", "invocation_id": "4c8a1f60d2b74e1a" }
+      }
+    },
+    {
+      "track_id": "metric:resource-sampler:cpu:metric:cpu.total.utilization",
+      "kind": "metric",
+      "entity": "metric:cpu.total.utilization",
+      "status": "available",
+      "unavailable_reason": null,
+      "metric": {
+        "type": "metric",
+        "record_id": "eea60e95f53883a2d63b93d01eee5a99",
+        "collection_id": "collection:full-0001",
+        "monotonic_ns": 3000000000,
+        "realtime_ns": 1794009603000000000,
+        "entity": "metric:cpu.total.utilization",
+        "source_plugin": "resource-sampler",
+        "stream_id": "cpu",
+        "name": "cpu.total.utilization",
+        "value": 8.0,
+        "unit": "percent"
+      },
+      "spans": [],
+      "last_event": null
+    },
+    {
+      "track_id": "metric:resource-sampler:disk:metric:disk.read_bytes_per_second",
+      "kind": "metric",
+      "entity": "metric:disk.read_bytes_per_second",
+      "status": "available",
+      "unavailable_reason": null,
+      "metric": {
+        "type": "metric",
+        "record_id": "e640c9182bd5c0cb7f8b37e582ed6333",
+        "collection_id": "collection:full-0001",
+        "monotonic_ns": 3000000000,
+        "realtime_ns": 1794009603000000000,
+        "entity": "metric:disk.read_bytes_per_second",
+        "source_plugin": "resource-sampler",
+        "stream_id": "disk",
+        "name": "disk.read_bytes_per_second",
+        "value": 0.0,
+        "unit": "bytes_per_second"
+      },
+      "spans": [],
+      "last_event": null
+    },
+    {
+      "track_id": "metric:resource-sampler:memory:metric:memory.used",
+      "kind": "metric",
+      "entity": "metric:memory.used",
+      "status": "available",
+      "unavailable_reason": null,
+      "metric": {
+        "type": "metric",
+        "record_id": "0971147fa18cee716b1322542b0779a1",
+        "collection_id": "collection:full-0001",
+        "monotonic_ns": 3000000000,
+        "realtime_ns": 1794009603000000000,
+        "entity": "metric:memory.used",
+        "source_plugin": "resource-sampler",
+        "stream_id": "memory",
+        "name": "memory.used",
+        "value": 4100000000.0,
+        "unit": "bytes"
+      },
+      "spans": [],
+      "last_event": null
+    },
+    {
+      "track_id": "span:systemd:systemd.units:service:nginx.service",
+      "kind": "span",
+      "entity": "service:nginx.service",
+      "status": "available",
+      "unavailable_reason": null,
+      "metric": null,
+      "spans": [
+        {
+          "type": "span",
+          "record_id": "be0e28c73fd5e4fe02cd30e0e4da6c94",
+          "collection_id": "collection:full-0001",
+          "monotonic_ns": 1200000000,
+          "realtime_ns": 1794009601200000000,
+          "entity": "service:nginx.service",
+          "source_plugin": "systemd",
+          "stream_id": "systemd.units",
+          "span_type": "service.active",
+          "state": "active",
+          "end_monotonic_ns": 8500000000,
+          "end_realtime_ns": 1794009608500000000,
+          "end_is_declared": true,
+          "closed_by": null,
+          "attributes": {
+            "unit": "nginx.service",
+            "sub_state": "running",
+            "active_state": "active"
+          }
+        }
+      ],
+      "last_event": null
+    },
+    {
+      "track_id": "span:systemd:systemd.units:service:postgresql.service",
+      "kind": "span",
+      "entity": "service:postgresql.service",
+      "status": "available",
+      "unavailable_reason": null,
+      "metric": null,
+      "spans": [
+        {
+          "type": "span",
+          "record_id": "410c8a8f7cf42ad64c03e59c1ffdec59",
+          "collection_id": "collection:full-0001",
+          "monotonic_ns": 900000000,
+          "realtime_ns": 1794009600900000000,
+          "entity": "service:postgresql.service",
+          "source_plugin": "systemd",
+          "stream_id": "systemd.units",
+          "span_type": "service.active",
+          "state": "failed",
+          "end_monotonic_ns": 5000000000,
+          "end_realtime_ns": 1794009605000000000,
+          "end_is_declared": true,
+          "closed_by": null,
+          "attributes": { "unit": "postgresql.service", "active_state": "failed" }
+        }
+      ],
+      "last_event": null
+    }
+  ],
+  "resources": { "available": true, "reasons": [] },
+  "clock": {
+    "anchor_ns": 1794009600000000000,
+    "drift_ns": 0,
+    "anchor_count": 15,
+    "unreliable": false
+  }
+}

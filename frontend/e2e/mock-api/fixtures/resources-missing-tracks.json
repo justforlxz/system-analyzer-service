@@ -1,0 +1,223 @@
+{
+  "machine_id": "machine:uos-PC",
+  "boot_id": "3f1c9a52-8f0e-4a10-9b1c-2b7d5c3a6e11",
+  "window_start_ns": null,
+  "window_end_ns": null,
+  "axis_start_ns": 1000000000,
+  "axis_end_ns": 4000000000,
+  "tracks": [
+    {
+      "track_id": "event:systemd:systemd.units:service:nginx.service",
+      "kind": "event",
+      "entity": "service:nginx.service",
+      "stream_id": "systemd.units",
+      "source_plugin": "systemd",
+      "status": "available",
+      "unavailable_reason": null,
+      "name": null,
+      "unit": null,
+      "items": [
+        {
+          "type": "event",
+          "record_id": "ed12128fcf4cb33f4a87e1c3497852d7",
+          "collection_id": "collection:resources-missing-0001",
+          "monotonic_ns": 1200000000,
+          "realtime_ns": 1794009601200000000,
+          "entity": "service:nginx.service",
+          "source_plugin": "systemd",
+          "stream_id": "systemd.units",
+          "event_type": "systemd.unit.started",
+          "severity": "info",
+          "message": "Started A high performance web server and a reverse proxy server.",
+          "attributes": { "unit": "nginx.service" }
+        }
+      ]
+    },
+    {
+      "track_id": "metric:-:-:metric:disk.read_bytes_per_second",
+      "kind": "metric",
+      "entity": "metric:disk.read_bytes_per_second",
+      "stream_id": null,
+      "source_plugin": null,
+      "status": "unavailable",
+      "unavailable_reason": "目标机器没有 iostat，磁盘 I/O 未采集",
+      "name": "disk.read_bytes_per_second",
+      "unit": "bytes_per_second",
+      "items": []
+    },
+    {
+      "track_id": "metric:-:-:metric:memory.used",
+      "kind": "metric",
+      "entity": "metric:memory.used",
+      "stream_id": null,
+      "source_plugin": null,
+      "status": "unavailable",
+      "unavailable_reason": "/proc/meminfo 在采集窗口内读取失败，本流没有数据",
+      "name": "memory.used",
+      "unit": "bytes",
+      "items": []
+    },
+    {
+      "track_id": "metric:resource-sampler:cpu:metric:cpu.total.utilization",
+      "kind": "metric",
+      "entity": "metric:cpu.total.utilization",
+      "stream_id": "cpu",
+      "source_plugin": "resource-sampler",
+      "status": "available",
+      "unavailable_reason": null,
+      "name": "cpu.total.utilization",
+      "unit": "percent",
+      "items": [
+        {
+          "type": "metric",
+          "record_id": "138a8781c0c92f415aa446ed7edd5293",
+          "collection_id": "collection:resources-missing-0001",
+          "monotonic_ns": 1000000000,
+          "realtime_ns": 1794009601000000000,
+          "entity": "metric:cpu.total.utilization",
+          "source_plugin": "resource-sampler",
+          "stream_id": "cpu",
+          "name": "cpu.total.utilization",
+          "value": 9.5,
+          "unit": "percent"
+        },
+        {
+          "type": "metric",
+          "record_id": "2d5bbfa5a77b860dd1063475f8f618a5",
+          "collection_id": "collection:resources-missing-0001",
+          "monotonic_ns": 2000000000,
+          "realtime_ns": 1794009602000000000,
+          "entity": "metric:cpu.total.utilization",
+          "source_plugin": "resource-sampler",
+          "stream_id": "cpu",
+          "name": "cpu.total.utilization",
+          "value": 21.75,
+          "unit": "percent"
+        },
+        {
+          "type": "metric",
+          "record_id": "f3233abce9cf5509164ea5abc04e1f47",
+          "collection_id": "collection:resources-missing-0001",
+          "monotonic_ns": 3000000000,
+          "realtime_ns": 1794009603000000000,
+          "entity": "metric:cpu.total.utilization",
+          "source_plugin": "resource-sampler",
+          "stream_id": "cpu",
+          "name": "cpu.total.utilization",
+          "value": 15.0,
+          "unit": "percent"
+        }
+      ]
+    },
+    {
+      "track_id": "span:systemd:systemd.units:service:nginx.service",
+      "kind": "span",
+      "entity": "service:nginx.service",
+      "stream_id": "systemd.units",
+      "source_plugin": "systemd",
+      "status": "available",
+      "unavailable_reason": null,
+      "name": null,
+      "unit": null,
+      "items": [
+        {
+          "type": "span",
+          "record_id": "02f0ec274264a6ad867d53b69c5209f3",
+          "collection_id": "collection:resources-missing-0001",
+          "monotonic_ns": 1200000000,
+          "realtime_ns": 1794009601200000000,
+          "entity": "service:nginx.service",
+          "source_plugin": "systemd",
+          "stream_id": "systemd.units",
+          "span_type": "service.active",
+          "state": "active",
+          "end_monotonic_ns": 4000000000,
+          "end_realtime_ns": 1794009604000000000,
+          "end_is_declared": true,
+          "closed_by": null,
+          "attributes": {}
+        }
+      ]
+    }
+  ],
+  "items": [
+    {
+      "type": "metric",
+      "record_id": "138a8781c0c92f415aa446ed7edd5293",
+      "collection_id": "collection:resources-missing-0001",
+      "monotonic_ns": 1000000000,
+      "realtime_ns": 1794009601000000000,
+      "entity": "metric:cpu.total.utilization",
+      "source_plugin": "resource-sampler",
+      "stream_id": "cpu",
+      "name": "cpu.total.utilization",
+      "value": 9.5,
+      "unit": "percent"
+    },
+    {
+      "type": "span",
+      "record_id": "02f0ec274264a6ad867d53b69c5209f3",
+      "collection_id": "collection:resources-missing-0001",
+      "monotonic_ns": 1200000000,
+      "realtime_ns": 1794009601200000000,
+      "entity": "service:nginx.service",
+      "source_plugin": "systemd",
+      "stream_id": "systemd.units",
+      "span_type": "service.active",
+      "state": "active",
+      "end_monotonic_ns": 4000000000,
+      "end_realtime_ns": 1794009604000000000,
+      "end_is_declared": true,
+      "closed_by": null,
+      "attributes": {}
+    },
+    {
+      "type": "event",
+      "record_id": "ed12128fcf4cb33f4a87e1c3497852d7",
+      "collection_id": "collection:resources-missing-0001",
+      "monotonic_ns": 1200000000,
+      "realtime_ns": 1794009601200000000,
+      "entity": "service:nginx.service",
+      "source_plugin": "systemd",
+      "stream_id": "systemd.units",
+      "event_type": "systemd.unit.started",
+      "severity": "info",
+      "message": "Started A high performance web server and a reverse proxy server.",
+      "attributes": { "unit": "nginx.service" }
+    },
+    {
+      "type": "metric",
+      "record_id": "2d5bbfa5a77b860dd1063475f8f618a5",
+      "collection_id": "collection:resources-missing-0001",
+      "monotonic_ns": 2000000000,
+      "realtime_ns": 1794009602000000000,
+      "entity": "metric:cpu.total.utilization",
+      "source_plugin": "resource-sampler",
+      "stream_id": "cpu",
+      "name": "cpu.total.utilization",
+      "value": 21.75,
+      "unit": "percent"
+    },
+    {
+      "type": "metric",
+      "record_id": "f3233abce9cf5509164ea5abc04e1f47",
+      "collection_id": "collection:resources-missing-0001",
+      "monotonic_ns": 3000000000,
+      "realtime_ns": 1794009603000000000,
+      "entity": "metric:cpu.total.utilization",
+      "source_plugin": "resource-sampler",
+      "stream_id": "cpu",
+      "name": "cpu.total.utilization",
+      "value": 15.0,
+      "unit": "percent"
+    }
+  ],
+  "wall_clock_items": [],
+  "resources": { "available": true, "reasons": [] },
+  "clock": {
+    "anchor_ns": 1794009600000000000,
+    "drift_ns": 0,
+    "anchor_count": 6,
+    "unreliable": false
+  }
+}
