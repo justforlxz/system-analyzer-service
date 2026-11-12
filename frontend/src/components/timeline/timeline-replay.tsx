@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { EventTrack } from "@/components/timeline/event-track";
@@ -263,6 +264,14 @@ export function TimelineReplay({
           <h1 className="text-xl font-semibold text-slate-900">{machine.hostname}</h1>
           <span className="font-mono text-xs text-slate-500">{machine.machine_id}</span>
           <span className="font-mono text-xs text-slate-500">启动 {bootId}</span>
+          <Link
+            className="text-xs text-slate-600 underline"
+            href={`/diagnostics?machine_id=${encodeURIComponent(
+              machine.machine_id,
+            )}&boot_id=${encodeURIComponent(bootId)}`}
+          >
+            服务诊断
+          </Link>
         </div>
         <dl className="grid grid-cols-2 gap-x-6 gap-y-2 rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs sm:grid-cols-3">
           <div>

@@ -301,6 +301,43 @@ class DiagnosticStore:
             records_skipped=skipped,
         )
 
+    async def ensure_entities(self, collection_id: str, entities: Sequence[BaseModel]) -> int:
+        """向已有采集所属的启动补齐实体，返回真正写入的行数。
+
+        分析插件只产出 ``GenericEntity``（service 等），而真实 Journal 导入只为
+        ``_SYSTEMD_UNIT`` 建过实体；被分析的 Unit 往往没有实体行，不补就引用不到。
+
+        幂等：实体唯一键是 ``(machine_id, boot_id, entity_id)``，重复写入走
+        ``ON CONFLICT DO NOTHING``，已有定义不被改写。只接受与这次采集同一台机器、同一次启动
+        的实体；跨启动或跨机器的实体直接拒绝，避免一次分析把数据写进别的启动。
+        """
+        state = await self.get_collection(collection_id)
+        if state is None:
+            raise StorageStateError(f"采集 {collection_id} 不在库里，不能补实体")
+        collection = state.collection
+        problems: list[str] = []
+        seen: set[str] = set()
+        for entity in entities:
+            label = getattr(entity, "entity_id", type(entity).__name__)
+            if isinstance(entity, (MachineEntity, BootEntity)):
+                problems.append(f"{label} 是机器或启动行，ensure_entities 只接受普通实体")
+                continue
+            if getattr(entity, "machine_id", None) != collection.machine_id:
+                problems.append(f"实体 {label} 的 machine_id 与采集不一致")
+            boot_id = getattr(entity, "boot_id", None)
+            if boot_id is not None and boot_id != collection.boot_id:
+                problems.append(f"实体 {label} 的 boot_id 与采集不一致")
+            if label in seen:
+                problems.append(f"实体 {label} 在同一批数据里出现两次")
+            seen.add(label)
+        if problems:
+            raise StorageValidationError(problems)
+        if not entities:
+            return 0
+        async with self._sessions() as session, session.begin():
+            written, _skipped = await self._insert_entities(session, entities)
+        return written
+
     # ------------------------------------------------------------------
     # 查询
     # ------------------------------------------------------------------

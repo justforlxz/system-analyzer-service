@@ -15,6 +15,7 @@ const NAV = [
   { href: "/imports", label: "导入" },
   { href: "/collections", label: "诊断记录" },
   { href: "/timeline", label: "时间线" },
+  { href: "/diagnostics", label: "服务诊断" },
 ];
 
 /** 全站导航。日常操作都在浏览器里完成：机器、采集任务、导入、诊断记录、时间线。 */

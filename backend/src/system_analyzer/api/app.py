@@ -9,6 +9,7 @@ from system_analyzer import __version__
 from system_analyzer.api.errors import install_error_handlers
 from system_analyzer.api.routers import (
     collection_tasks,
+    diagnostics,
     health,
     imports,
     query,
@@ -57,6 +58,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router, prefix="/api")
     app.include_router(query.router, prefix="/api")
     app.include_router(timeline.router, prefix="/api")
+    app.include_router(diagnostics.router, prefix="/api")
     app.include_router(imports.router, prefix="/api")
     app.include_router(targets.router, prefix="/api")
     app.include_router(collection_tasks.router, prefix="/api")

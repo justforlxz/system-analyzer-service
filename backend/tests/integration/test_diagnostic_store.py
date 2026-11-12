@@ -435,6 +435,49 @@ async def test_append_records_adds_supplementary_data(store: DiagnosticStore) ->
     assert state is not None and state.import_status is ImportStatus.IMPORTED
 
 
+async def test_ensure_entities_adds_missing_service_entities_idempotently(
+    store: DiagnosticStore,
+) -> None:
+    """分析插件补实体：第一次写入，第二次与已有定义都不变。"""
+    sample = load_sample("full.bootrec")
+    await store.import_collection(sample.collection, sample.entities, sample.record_lines)
+    entity = GenericEntity(
+        entity_type="service",
+        entity_id="service:redis.service",
+        machine_id=MACHINE_ID,
+        boot_id=BOOT_ID,
+        name="redis.service",
+        attributes={"unit": "redis.service"},
+    )
+
+    assert await store.ensure_entities(FULL_COLLECTION, [entity]) == 1
+    assert entity in await store.list_entities(MACHINE_ID, BOOT_ID)
+    assert await store.ensure_entities(FULL_COLLECTION, [entity]) == 0
+    assert len(await store.list_entities(MACHINE_ID, BOOT_ID)) == FULL_ENTITIES + 1
+
+
+async def test_ensure_entities_rejects_entities_from_another_boot(
+    store: DiagnosticStore,
+) -> None:
+    sample = load_sample("full.bootrec")
+    await store.import_collection(sample.collection, sample.entities, sample.record_lines)
+    foreign = GenericEntity(
+        entity_type="service",
+        entity_id="service:redis.service",
+        machine_id=MACHINE_ID,
+        boot_id="another-boot",
+        name="redis.service",
+    )
+
+    with pytest.raises(StorageValidationError) as error:
+        await store.ensure_entities(FULL_COLLECTION, [foreign])
+    assert any("boot_id" in problem for problem in error.value.problems)
+    assert all(
+        not isinstance(entity, GenericEntity) or entity.entity_id != "service:redis.service"
+        for entity in await store.list_entities(MACHINE_ID, BOOT_ID)
+    )
+
+
 async def test_records_without_optional_fields_import_fine(store: DiagnosticStore) -> None:
     """可选字段省略的原始记录必须能导入（0.2 校验器就是按原始字典算摘要的）。"""
     sample = load_sample("full.bootrec")

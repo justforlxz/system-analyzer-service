@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from system_analyzer.api.sync_store import SyncCollectionAccess, SyncStoreAccess
 from system_analyzer.core.config import Settings, get_settings
 from system_analyzer.core.db import create_engine
-from system_analyzer.jobs.models import SOURCE_IMPORT_JOB_KIND
+from system_analyzer.jobs.models import ANALYSIS_JOB_KIND, SOURCE_IMPORT_JOB_KIND
 from system_analyzer.jobs.queue import Job, JobQueue, JobResultStore
 from system_analyzer.plugins.contracts import ImportResult, ImportSource, PluginInputError
 from system_analyzer.plugins.registry import PluginRegistry, get_registry
@@ -53,6 +53,7 @@ async def run_import_job(
     registry: PluginRegistry,
     queue: JobResultStore,
     access_factory: Callable[[], SyncCollectionAccess],
+    enqueue_analysis: Callable[[dict[str, Any]], Any] | None = None,
 ) -> None:
     """执行一个导入任务，并把结果或失败分类写回任务行。
 
@@ -73,7 +74,40 @@ async def run_import_job(
         logger.exception("导入任务 %s 执行失败", job.id)
         await queue.record_result(job.id, _failure_patch("internal", INTERNAL_FAILURE_MESSAGE))
         raise
-    await queue.record_result(job.id, _result_patch(result, access))
+    patch = _result_patch(result, access)
+    if enqueue_analysis is not None:
+        patch.update(await _enqueue_analysis(enqueue_analysis, access, patch))
+    await queue.record_result(job.id, patch)
+
+
+async def _enqueue_analysis(
+    enqueue: Callable[[dict[str, Any]], Any],
+    access: SyncCollectionAccess,
+    patch: dict[str, Any],
+) -> dict[str, Any]:
+    """导入成功后入队一次分析任务；入队失败只记日志，不把已经成功的导入判成失败。
+
+    导入的数据已经写进库，这时把任务标成失败会触发重试与重复导入。入队失败写进任务结果的
+    ``analysis_enqueue_error``，排查时能看出「导入成功但分析没有排上」。
+    """
+    collection_id = patch.get("collection_id")
+    if not isinstance(collection_id, str):
+        return {}
+    try:
+        state = await asyncio.to_thread(access.get_collection, collection_id)
+        if state is None:
+            return {"analysis_enqueue_error": f"采集 {collection_id} 不在库里"}
+        job_id = await enqueue(
+            {
+                "machine_id": state.collection.machine_id,
+                "boot_id": state.collection.boot_id,
+                "collection_id": collection_id,
+            }
+        )
+        return {"analysis_job_id": str(job_id)}
+    except Exception as exc:
+        logger.exception("导入任务完成后没能入队分析任务")
+        return {"analysis_enqueue_error": f"{type(exc).__name__}: {exc}"}
 
 
 def invoke_import(
@@ -139,6 +173,7 @@ def import_handlers(
                 registry=resolved_registry,
                 queue=queue,
                 access_factory=lambda: SyncStoreAccess(resolved_settings.database_url),
+                enqueue_analysis=lambda payload: queue.enqueue(ANALYSIS_JOB_KIND, payload),
             )
         finally:
             await engine.dispose()

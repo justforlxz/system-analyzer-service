@@ -8,6 +8,7 @@ from system_analyzer.core.config import Settings, get_settings
 from system_analyzer.core.db import create_engine
 from system_analyzer.jobs.queue import JobQueue
 from system_analyzer.plugins.builtins import register_builtins
+from system_analyzer.worker.analysis_jobs import analysis_handlers
 from system_analyzer.worker.import_jobs import import_handlers
 from system_analyzer.worker.runner import JobHandler, Worker
 
@@ -16,9 +17,10 @@ def default_handlers() -> dict[str, JobHandler]:
     """当前注册的任务处理器。
 
     导入任务的 ``import.source`` 实现在 ``worker/import_jobs.py``；采集任务的
-    ``collect.target`` 实现在 ``collection/jobs.py``；分析任务由 2.x 逐步加入。
+    ``collect.target`` 实现在 ``collection/jobs.py``；分析任务的 ``analysis.run`` 实现在
+    ``worker/analysis_jobs.py``，由导入任务成功后自动入队。
     """
-    return {**import_handlers(), **collection_handlers()}
+    return {**import_handlers(), **collection_handlers(), **analysis_handlers()}
 
 
 async def run_worker(settings: Settings) -> None:
