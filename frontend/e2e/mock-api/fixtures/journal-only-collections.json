@@ -1,0 +1,19 @@
+{
+  "items": [
+    {
+      "collection_id": "collection:journal-only-0001",
+      "machine_id": "machine:uos-PC",
+      "boot_id": "3f1c9a52-8f0e-4a10-9b1c-2b7d5c3a6e11",
+      "mode": "journal_import",
+      "created_realtime_ns": 1794009600000000000,
+      "import_status": "imported",
+      "import_error": null,
+      "source_sha256": "a6b141d28a39d970ba792dd5373da4dface4fb9828e050a559e8e688273fc6b4",
+      "resources_available": false,
+      "resources_reason": "journal_import：压缩包只含 Journal，没有采集 CPU、内存、磁盘 I/O"
+    }
+  ],
+  "total": 1,
+  "limit": 10,
+  "offset": 0
+}

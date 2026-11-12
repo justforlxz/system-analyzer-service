@@ -1,0 +1,9 @@
+{
+  "machine_id": "machine:uos-PC",
+  "boot_id": "3f1c9a52-8f0e-4a10-9b1c-2b7d5c3a6e11",
+  "start_ns": 1200000000,
+  "end_ns": 5000000000,
+  "position_ns": 1200000000,
+  "previous_ns": null,
+  "next_ns": 5000000000
+}

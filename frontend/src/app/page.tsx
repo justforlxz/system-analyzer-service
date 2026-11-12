@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { apiBaseUrl } from "@/lib/api/config";
 import { Button } from "@/components/ui/button";
 
@@ -14,8 +16,11 @@ export default function HomePage() {
         <dt className="font-medium text-slate-700">后端 API 地址</dt>
         <dd className="mt-1 font-mono text-slate-500">{apiBaseUrl()}</dd>
       </dl>
-      <div>
+      <div className="flex items-center gap-3">
         <Button type="button">占位按钮</Button>
+        <Link className="text-sm text-slate-900 underline" href="/timeline">
+          打开启动过程时间线回放
+        </Link>
       </div>
     </main>
   );

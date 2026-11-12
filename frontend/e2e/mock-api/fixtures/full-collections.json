@@ -1,0 +1,19 @@
+{
+  "items": [
+    {
+      "collection_id": "collection:full-0001",
+      "machine_id": "machine:uos-PC",
+      "boot_id": "3f1c9a52-8f0e-4a10-9b1c-2b7d5c3a6e11",
+      "mode": "ssh_collection",
+      "created_realtime_ns": 1794009600000000000,
+      "import_status": "imported",
+      "import_error": null,
+      "source_sha256": "1b556899ed6633685cb3d47dabbb73b8a8eec938e5d980ba94aaa1adbe78b4e1",
+      "resources_available": true,
+      "resources_reason": null
+    }
+  ],
+  "total": 1,
+  "limit": 10,
+  "offset": 0
+}

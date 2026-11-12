@@ -1,0 +1,105 @@
+{
+  "machine_id": "machine:uos-PC",
+  "boot_id": "3f1c9a52-8f0e-4a10-9b1c-2b7d5c3a6e11",
+  "window_start_ns": null,
+  "window_end_ns": null,
+  "axis_start_ns": 1200000000,
+  "axis_end_ns": 5000000000,
+  "tracks": [
+    {
+      "track_id": "event:journal-importer:systemd.units:service:nginx.service",
+      "kind": "event",
+      "entity": "service:nginx.service",
+      "stream_id": "systemd.units",
+      "source_plugin": "journal-importer",
+      "status": "available",
+      "unavailable_reason": null,
+      "name": null,
+      "unit": null,
+      "items": [
+        {
+          "type": "event",
+          "record_id": "73cbd5552f27b5cbb5d691b6e3934beb",
+          "collection_id": "collection:journal-only-0001",
+          "monotonic_ns": 1200000000,
+          "realtime_ns": 1794009601200000000,
+          "entity": "service:nginx.service",
+          "source_plugin": "journal-importer",
+          "stream_id": "systemd.units",
+          "event_type": "systemd.unit.started",
+          "severity": "info",
+          "message": "Started A high performance web server and a reverse proxy server.",
+          "attributes": { "unit": "nginx.service", "derived_from": "journal" }
+        }
+      ]
+    },
+    {
+      "track_id": "event:journal-importer:systemd.units:service:postgresql.service",
+      "kind": "event",
+      "entity": "service:postgresql.service",
+      "stream_id": "systemd.units",
+      "source_plugin": "journal-importer",
+      "status": "available",
+      "unavailable_reason": null,
+      "name": null,
+      "unit": null,
+      "items": [
+        {
+          "type": "event",
+          "record_id": "570f5df18ff5c93dbbf27882a09a9e96",
+          "collection_id": "collection:journal-only-0001",
+          "monotonic_ns": 5000000000,
+          "realtime_ns": 1794009605000000000,
+          "entity": "service:postgresql.service",
+          "source_plugin": "journal-importer",
+          "stream_id": "systemd.units",
+          "event_type": "systemd.unit.failed",
+          "severity": "error",
+          "message": "postgresql.service: Main process exited, code=exited, status=1/FAILURE",
+          "attributes": { "unit": "postgresql.service", "derived_from": "journal" }
+        }
+      ]
+    }
+  ],
+  "items": [
+    {
+      "type": "event",
+      "record_id": "73cbd5552f27b5cbb5d691b6e3934beb",
+      "collection_id": "collection:journal-only-0001",
+      "monotonic_ns": 1200000000,
+      "realtime_ns": 1794009601200000000,
+      "entity": "service:nginx.service",
+      "source_plugin": "journal-importer",
+      "stream_id": "systemd.units",
+      "event_type": "systemd.unit.started",
+      "severity": "info",
+      "message": "Started A high performance web server and a reverse proxy server.",
+      "attributes": { "unit": "nginx.service", "derived_from": "journal" }
+    },
+    {
+      "type": "event",
+      "record_id": "570f5df18ff5c93dbbf27882a09a9e96",
+      "collection_id": "collection:journal-only-0001",
+      "monotonic_ns": 5000000000,
+      "realtime_ns": 1794009605000000000,
+      "entity": "service:postgresql.service",
+      "source_plugin": "journal-importer",
+      "stream_id": "systemd.units",
+      "event_type": "systemd.unit.failed",
+      "severity": "error",
+      "message": "postgresql.service: Main process exited, code=exited, status=1/FAILURE",
+      "attributes": { "unit": "postgresql.service", "derived_from": "journal" }
+    }
+  ],
+  "wall_clock_items": [],
+  "resources": {
+    "available": false,
+    "reasons": ["journal_import：压缩包只含 Journal，没有采集 CPU、内存、磁盘 I/O"]
+  },
+  "clock": {
+    "anchor_ns": 1794009600000000000,
+    "drift_ns": 0,
+    "anchor_count": 3,
+    "unreliable": false
+  }
+}
