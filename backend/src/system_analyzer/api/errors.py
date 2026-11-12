@@ -16,6 +16,9 @@
 | ``not_found`` | 404 | 机器、启动、采集、任务或接口路径不存在 |
 | ``internal_error`` | 500 | 服务端内部错误，包含插件抛出的未处理异常 |
 
+另外两个状态码复用上面同一套 ``type``，不新增分类：413 表示上传内容超过上限，409 表示
+「当前状态不允许这个操作」（例如取消一个已经结束的采集任务）。
+
 插件契约里的错误也在这里转换成统一结构，不让插件自己的异常类型漏到 HTTP 层：
 
 - ``PluginInputError`` → ``invalid_format``（输入不对，不是服务端缺陷）
@@ -121,6 +124,20 @@ def payload_too_large(message: str) -> ApiError:
 
 def not_found(message: str) -> ApiError:
     return ApiError(ErrorType.NOT_FOUND, message)
+
+
+def conflict(message: str, *, details: Sequence[str] = ()) -> ApiError:
+    """当前状态不允许这个操作，例如取消一个已经结束的采集任务。
+
+    ``type`` 与 ``invalid_parameter`` 相同：调用方拿到的确实是「这次请求不成立」，只是它与
+    参数写错不同——参数本身没错，是资源当前的状态不允许。用 409 与 422 区分开。
+    """
+    return ApiError(
+        ErrorType.INVALID_PARAMETER,
+        message,
+        details=details,
+        status_code=409,
+    )
 
 
 def internal_error(message: str) -> ApiError:

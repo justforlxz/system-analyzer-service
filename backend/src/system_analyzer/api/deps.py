@@ -17,6 +17,8 @@ from system_analyzer.core.config import Settings
 from system_analyzer.core.db import create_engine
 from system_analyzer.jobs.queue import JobQueue
 from system_analyzer.plugins.registry import PluginRegistry
+from system_analyzer.remote.service import SshTargetService
+from system_analyzer.remote.targets import SshTargetRepository
 from system_analyzer.storage import DiagnosticStore
 from system_analyzer.timeline import TimelineEngine
 
@@ -75,6 +77,17 @@ def get_job_queue(request: Request) -> JobQueue:
 def get_plugins(request: Request) -> PluginRegistry:
     """本进程已经注册过的插件清单（``create_app`` 启动时注册一次）。"""
     return request.app.state.plugins
+
+
+def get_target_service(request: Request) -> SshTargetService:
+    """目标机器的业务入口：增删改查与连接测试。
+
+    不挂到 ``app.state`` 上：``SshTargetService`` 只持有仓储与配置，每次请求新建一个没有
+    开销，也就不必在 lifespan 里多管一个对象的释放。
+    """
+    return SshTargetService(
+        SshTargetRepository(get_engine(request)), settings=app_settings(request)
+    )
 
 
 @dataclass(frozen=True, slots=True)

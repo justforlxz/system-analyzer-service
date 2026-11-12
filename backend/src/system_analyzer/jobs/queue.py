@@ -239,19 +239,7 @@ class JobQueue:
                     {"job_id": job_id},
                 )
             ).one_or_none()
-        if row is None:
-            return None
-        return JobRecord(
-            id=row.id,
-            kind=row.kind,
-            payload=row.payload,
-            status=JobStatus(row.status),
-            attempts=row.attempts,
-            max_attempts=row.max_attempts,
-            last_error=row.last_error,
-            created_at=row.created_at,
-            updated_at=row.updated_at,
-        )
+        return None if row is None else _record_from_row(row)
 
     async def record_result(self, job_id: UUID, result: Mapping[str, Any]) -> None:
         """把任务结果写回任务行的 ``payload.result``，不改变任务状态。
@@ -276,3 +264,102 @@ class JobQueue:
                 ),
                 {"job_id": job_id, "result": json.dumps(result, ensure_ascii=False)},
             )
+
+    async def list_by_kind(
+        self,
+        kind: str,
+        *,
+        target_id: str | None = None,
+        status: JobStatus | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[JobRecord], int]:
+        """按任务类型列任务，返回（本页记录，筛选后的总数）。
+
+        只读：不改状态、不锁行，与 ``get`` 一样给任务状态查询用。``target_id`` 过滤的是
+        ``payload.target_id``——采集任务的目标机器写在 payload 里，没有单独的列
+        （见 ``collection/jobs.py`` 的 payload 说明）。排序按创建时间倒序、同一时刻按 id，
+        翻页因此稳定。
+
+        ``AS text`` 的两次 cast 是给「没传这个筛选条件」留的空值：asyncpg 无法从
+        ``NULL IS NULL`` 推断参数类型，不带 cast 时报「无法确定参数类型」。
+        """
+        params: dict[str, Any] = {
+            "kind": kind,
+            "target_id": target_id,
+            "status": None if status is None else status.value,
+            "limit": limit,
+            "offset": offset,
+        }
+        where = """
+             WHERE kind = :kind
+               AND (CAST(:target_id AS text) IS NULL OR payload ->> 'target_id' = :target_id)
+               AND (CAST(:status AS text) IS NULL OR status = :status)
+        """
+        async with self._engine.begin() as conn:
+            total = (
+                await conn.execute(text(f"SELECT count(*) FROM jobs{where}"), params)
+            ).scalar_one()
+            rows = (
+                await conn.execute(
+                    text(
+                        f"""
+                        SELECT id, kind, payload, status, attempts, max_attempts,
+                               last_error, created_at, updated_at
+                          FROM jobs
+                        {where}
+                         ORDER BY created_at DESC, id
+                         LIMIT :limit OFFSET :offset
+                        """
+                    ),
+                    params,
+                )
+            ).all()
+        return [_record_from_row(row) for row in rows], int(total)
+
+    async def request_cancel(self, job_id: UUID, *, kind: str) -> JobRecord | None:
+        """给任务行置上取消标记，返回更新后的任务记录。
+
+        只对 ``queued`` / ``running`` 的任务生效：已经结束的任务改了标记也不会有人读，却让
+        调用方以为取消成功。标记写在 ``payload.cancel_requested``，采集任务的处理器在两个
+        步骤之间读它（见 ``collection/jobs.py`` 的模块说明）。
+
+        这里不替调用方区分「任务不存在」与「这个状态不能取消」：两种都返回 ``None``，
+        再由调用方读一次任务决定用哪个响应。只改 JSONB 的这一个键，不碰任务状态。
+        """
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    text(
+                        """
+                        UPDATE jobs
+                           SET payload = jsonb_set(
+                                   payload, '{cancel_requested}', 'true'::jsonb, true
+                               ),
+                               updated_at = now()
+                         WHERE id = :job_id
+                           AND kind = :kind
+                           AND status IN ('queued', 'running')
+                        RETURNING id, kind, payload, status, attempts, max_attempts,
+                                  last_error, created_at, updated_at
+                        """
+                    ),
+                    {"job_id": job_id, "kind": kind},
+                )
+            ).one_or_none()
+        return None if row is None else _record_from_row(row)
+
+
+def _record_from_row(row: Any) -> JobRecord:
+    """把一行 ``jobs`` 记录转成 ``JobRecord``。读任务的三个方法共用一份字段对照。"""
+    return JobRecord(
+        id=row.id,
+        kind=row.kind,
+        payload=row.payload,
+        status=JobStatus(row.status),
+        attempts=row.attempts,
+        max_attempts=row.max_attempts,
+        last_error=row.last_error,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
