@@ -16,12 +16,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import shlex
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from system_analyzer.collection.environment import ENVIRONMENT_COMMAND
+from system_analyzer.collection.lightdm import (
+    AUTOLOGIN_FRAGMENT,
+    LIGHTDM_CONFIG,
+    LIGHTDM_STATE_COMMAND,
+    SESSIONS_COMMAND,
+)
 from system_analyzer.remote.client import CommandResult
 from system_analyzer.remote.probe import SYSTEM_INFO_COMMAND
 
@@ -44,6 +52,58 @@ DEFAULT_MODE = "644"
 DEFAULT_OWNER = (0, 0)
 
 
+class LightDmFakeState:
+    """一台假目标机器上的 LightDM 与会话状态，跨连接共享。
+
+    采集会在多个阶段分别建立连接（In Progress 装片段并重启，Post 删片段），
+    「重启过几次」「重启后有没有建立桌面会话」必须跨连接保留，否则没法断言
+    「恢复阶段没有再次重启 LightDM」。
+    """
+
+    def __init__(self) -> None:
+        self.lightdm_active = True
+        """LightDM 是否在运行。为假时重启前的状态检查就会失败。"""
+        self.sessions: list[dict[str, str]] = [
+            {
+                "Id": "2",
+                "User": "1000",
+                "Name": "uos",
+                "Seat": "seat0",
+                "Type": "x11",
+                "Class": "user",
+                "Active": "yes",
+                "State": "active",
+                "Remote": "no",
+                "TTY": "tty1",
+                "Display": ":0",
+            },
+            {
+                "Id": "677",
+                "User": "1000",
+                "Name": "uos",
+                "Seat": "",
+                "Type": "tty",
+                "Class": "user",
+                "Active": "yes",
+                "State": "active",
+                "Remote": "yes",
+                "TTY": "pts/1",
+                "Display": "",
+            },
+        ]
+        """这台机器上的 logind 会话，结构与 ``loginctl show-session`` 的输出一致。"""
+        self.desktop_session_ready = True
+        """重启 LightDM 后新建的会话是否落在 seat0、处于 active。为假时模拟「登录了但没桌面」。"""
+        self.autologin_effective = True
+        """临时片段是否真的生效。为假时模拟「自动登录没有发生」。"""
+        self.restart_stderr: str | None = None
+        """非空时让 ``systemctl restart lightdm`` 以非 0 退出。"""
+        self.restarts: list[dict[str, Any]] = []
+        """每次重启 LightDM 时记下当时安装的自动登录片段，便于断言「只重启一次」。"""
+        self.known_users: set[str] = {"uos"}
+        self.session_seq = 2000
+
+
 class RecordingSshClient:
     """记录命令、上传、下载的假 ``SshClient``，带一个最小的远端文件系统模型。
 
@@ -51,7 +111,13 @@ class RecordingSshClient:
     改到调用方看得见的那一份，「远端文件被恢复成原样」可以直接断言内容。
     """
 
-    def __init__(self, files: dict[str, bytes], *, hostname: str) -> None:
+    def __init__(
+        self,
+        files: dict[str, bytes],
+        *,
+        hostname: str,
+        lightdm: LightDmFakeState | None = None,
+    ) -> None:
         self.files = files
         self.hostname = hostname
         self.modes: dict[str, str] = {}
@@ -65,6 +131,7 @@ class RecordingSshClient:
         """普通身份 ``stat`` 读不到状态的路径，模拟父目录不可进入。"""
         self.stat_unavailable: set[str] = set()
         """任何身份都拿不到 ``stat`` 结果的路径，模拟目标机器缺少可用的 ``stat``。"""
+        self.lightdm = lightdm or LightDmFakeState()
         self.closed = False
 
     async def run(
@@ -109,6 +176,12 @@ class RecordingSshClient:
             return self._result(command, PROBE_STDOUT_TEMPLATE.format(hostname=self.hostname))
         if command == ENVIRONMENT_COMMAND:
             return self._result(command, ENVIRONMENT_STDOUT)
+        if command == LIGHTDM_STATE_COMMAND:
+            return self._lightdm_state(command)
+        if command == SESSIONS_COMMAND:
+            return self._result(command, self._sessions_stdout())
+        if command.startswith("id -u "):
+            return self._user_lookup(command)
         if privileged:
             return self._privileged(command)
         if command.startswith("stat -c"):
@@ -137,6 +210,8 @@ class RecordingSshClient:
             return self._result(command, SUDO_BANNER)
         if command == "systemctl daemon-reload":
             return self._result(command, SUDO_BANNER)
+        if command == "systemctl restart lightdm":
+            return self._restart_lightdm(command)
         parts = shlex.split(command)
         if parts[:2] == ["sh", "-c"]:
             return self._probe(command, parts[4])
@@ -216,6 +291,82 @@ class RecordingSshClient:
         self.owners.setdefault(target, DEFAULT_OWNER)
         return self._result(command, SUDO_BANNER)
 
+    def _lightdm_state(self, command: str) -> CommandResult:
+        """``systemctl is-active`` + 主配置校验和/权限 + 片段目录内容。"""
+        config = self.files.get(LIGHTDM_CONFIG)
+        checksum = hashlib.sha256(config).hexdigest() if config is not None else ""
+        mode = self.modes.get(LIGHTDM_CONFIG, DEFAULT_MODE)
+        uid, gid = self.owners.get(LIGHTDM_CONFIG, DEFAULT_OWNER)
+        prefix = AUTOLOGIN_FRAGMENT.rsplit("/", 1)[0] + "/"
+        fragments = sorted(path[len(prefix) :] for path in self.files if path.startswith(prefix))
+        stdout = (
+            f"lightdm_active={'active' if self.lightdm.lightdm_active else 'inactive'}\n"
+            f"lightdm_conf_sha256={checksum}\n"
+            f"lightdm_conf_mode={mode} {uid} {gid}\n"
+            f"fragment_dir={' '.join(fragments)}\n"
+        )
+        return self._result(command, stdout)
+
+    def _sessions_stdout(self) -> str:
+        """按 ``SESSIONS_COMMAND`` 的形状输出会话：``session=<id>`` 加若干 ``Key=Value``。"""
+        lines: list[str] = []
+        for session in self.lightdm.sessions:
+            lines.append(f"session={session.get('Id', '')}")
+            for key in (
+                "Id",
+                "Name",
+                "Seat",
+                "Type",
+                "Class",
+                "Active",
+                "State",
+                "Remote",
+                "TTY",
+                "Display",
+            ):
+                lines.append(f"{key}={session.get(key, '')}")
+        return "\n".join(lines) + ("\n" if lines else "")
+
+    def _user_lookup(self, command: str) -> CommandResult:
+        user = shlex.split(command)[2]
+        if user not in self.lightdm.known_users:
+            return self._failure(command, 1, f"id: {user}：无此用户")
+        return self._result(command, "1000\n")
+
+    def _restart_lightdm(self, command: str) -> CommandResult:
+        """重启 LightDM：按已安装的临时片段决定是否建立桌面会话。"""
+        fragment = self.files.get(AUTOLOGIN_FRAGMENT, b"").decode()
+        user = next(
+            (
+                line.partition("=")[2].strip()
+                for line in fragment.splitlines()
+                if line.startswith("autologin-user=")
+            ),
+            None,
+        )
+        self.lightdm.restarts.append({"user": user, "fragment": fragment})
+        if self.lightdm.restart_stderr is not None:
+            return self._failure(command, 1, self.lightdm.restart_stderr)
+        if self.lightdm.autologin_effective and user:
+            self.lightdm.session_seq += 1
+            seat = "seat0" if self.lightdm.desktop_session_ready else ""
+            self.lightdm.sessions.append(
+                {
+                    "Id": str(self.lightdm.session_seq),
+                    "User": "1000",
+                    "Name": user,
+                    "Seat": seat,
+                    "Type": "x11" if self.lightdm.desktop_session_ready else "tty",
+                    "Class": "user",
+                    "Active": "yes",
+                    "State": "active",
+                    "Remote": "no",
+                    "TTY": "tty1",
+                    "Display": ":0" if seat else "",
+                }
+            )
+        return self._result(command, SUDO_BANNER)
+
     def _remove_tree(self, directory: str) -> None:
         prefix = directory.rstrip("/") + "/"
         for path in [item for item in self.files if item.startswith(prefix)]:
@@ -242,16 +393,63 @@ class FakeConnector:
         self.files = {target_id: dict(files) for target_id, files in machines.items()}
         self.clients: dict[str, list[RecordingSshClient]] = {key: [] for key in machines}
         self.connected: list[str] = []
+        self.lightdm_state: dict[str, LightDmFakeState] = {
+            key: LightDmFakeState() for key in machines
+        }
 
     @asynccontextmanager
     async def connect(self, target_id: str) -> AsyncIterator[RecordingSshClient]:
         self.connected.append(target_id)
-        client = RecordingSshClient(self.files[target_id], hostname=target_id)
+        client = RecordingSshClient(
+            self.files[target_id], hostname=target_id, lightdm=self.lightdm_state[target_id]
+        )
         self.clients[target_id].append(client)
         try:
             yield client
         finally:
             await client.aclose()
+
+    @property
+    def lightdm_restarts(self) -> list[dict[str, Any]]:
+        """所有目标机器上的 LightDM 重启记录，单机测试直接读它。"""
+        return [item for state in self.lightdm_state.values() for item in state.restarts]
+
+    @property
+    def autologin_effective(self) -> bool:
+        return self._only_lightdm().autologin_effective
+
+    @autologin_effective.setter
+    def autologin_effective(self, value: bool) -> None:
+        self._only_lightdm().autologin_effective = value
+
+    @property
+    def desktop_session_ready(self) -> bool:
+        return self._only_lightdm().desktop_session_ready
+
+    @desktop_session_ready.setter
+    def desktop_session_ready(self, value: bool) -> None:
+        self._only_lightdm().desktop_session_ready = value
+
+    @property
+    def lightdm_restart_stderr(self) -> str | None:
+        return self._only_lightdm().restart_stderr
+
+    @lightdm_restart_stderr.setter
+    def lightdm_restart_stderr(self, value: str | None) -> None:
+        self._only_lightdm().restart_stderr = value
+
+    @property
+    def known_users(self) -> set[str]:
+        return self._only_lightdm().known_users
+
+    @known_users.setter
+    def known_users(self, value: set[str]) -> None:
+        self._only_lightdm().known_users = value
+
+    def _only_lightdm(self) -> LightDmFakeState:
+        if len(self.lightdm_state) != 1:
+            raise AssertionError("单机属性的便捷访问只适用于只有一个目标的连接器")
+        return next(iter(self.lightdm_state.values()))
 
     def commands_of(self, target_id: str) -> list[str]:
         """这台机器上执行过的全部普通命令，按发生顺序。"""

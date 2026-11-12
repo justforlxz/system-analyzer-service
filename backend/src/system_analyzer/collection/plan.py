@@ -31,6 +31,7 @@ from system_analyzer.collection.environment import (
     ensure_supported,
     inspect_environment,
 )
+from system_analyzer.collection.lightdm import trigger_desktop_login as run_desktop_login
 from system_analyzer.collection.restore import (
     BACKUP_DIR_NAME as BACKUP_DIR_NAME,
 )
@@ -180,8 +181,16 @@ async def start_sampling(_ctx: PhaseContext) -> None:
     """占位：启动远程采样循环，由任务 3.4 填入。当前不改变目标机器。"""
 
 
-async def trigger_desktop_login(_ctx: PhaseContext) -> None:
-    """占位：改 LightDM 配置并重启，等桌面会话建立，由任务 3.6 填入。当前不改变目标机器。"""
+async def trigger_desktop_login(ctx: PhaseContext) -> None:
+    """用 LightDM 原生自动登录为指定桌面用户建立图形会话（任务 3.6）。
+
+    任务选项里没有 ``desktop_user`` 时什么都不做，目标机器不改动；给了用户名就先放临时
+    片段、重启 LightDM，再等 ``seat0`` 上出现该用户的活动图形会话。片段登记在改动清单里，
+    由 Post 阶段的「恢复环境」删除——恢复只删片段，不重启 LightDM，已有会话不被打断。
+
+    失败分成「自动登录没有发生」与「会话没建立」两类，见 ``collection.lightdm``。
+    """
+    await run_desktop_login(ctx)
 
 
 async def collect_continuously(_ctx: PhaseContext) -> None:
