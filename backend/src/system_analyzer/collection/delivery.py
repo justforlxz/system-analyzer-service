@@ -58,6 +58,7 @@ from system_analyzer.domain.bootrec import (
     MachineEntity,
     Record,
 )
+from system_analyzer.domain.time_base import normalize_boot_id
 from system_analyzer.remote.errors import RemoteError
 from system_analyzer.storage import CollectionState, DiagnosticStore, ImportStatus
 
@@ -65,6 +66,7 @@ logger = logging.getLogger(__name__)
 
 DELIVERY_OPTION = "delivery"
 JOURNAL_OPTION = "journal"
+SAMPLING_OPTION = "sampling"
 COLLECTION_ID_OPTION = "collection_id"
 MACHINE_ID_OPTION = "machine_id"
 BOOT_ID_OPTION = "boot_id"
@@ -177,7 +179,9 @@ async def deliver_from_context(ctx: PhaseContext) -> DeliveryReport | None:
     local_path = packaged.path
     transfer_report: TransferReport | None = None
     if remote_path:
-        if bool(delivery_options.get("stage_local_pack", False)):
+        # 默认先上传本地产出的包：这个系统里远端文件没有别的来源，只给 remote_path 时
+        # 直接下载会去取一个从未上传的文件。显式传 false 才按「远端已经有包」处理。
+        if bool(delivery_options.get("stage_local_pack", True)):
             async with ctx.connect() as connected:
                 await stage_remote_file(connected, packaged.path, remote_path)
         transfer_report = await _pull_with_reconnect(
@@ -341,6 +345,7 @@ async def _load_source(ctx: PhaseContext) -> PackagingInput | ImportedCollection
                     collection_id, clock_domain=clock_domain
                 ):
                     records.append(_record_mapping(record))
+        records.extend(_sampling_records(ctx))
         collection = (
             state.collection if state is not None else _collection_from_context(ctx, collection_id)
         )
@@ -383,7 +388,7 @@ async def _load_source(ctx: PhaseContext) -> PackagingInput | ImportedCollection
                     description="journalctl -o export 的原始导出",
                 )
             )
-        artifacts.extend(_extra_artifacts(delivery_options))
+        artifacts.extend(_extra_artifacts(delivery_options, scratch_dir=ctx.scratch_dir))
         return PackagingInput(
             collection=collection,
             machine=machine,
@@ -404,13 +409,17 @@ def _collection_from_context(ctx: PhaseContext, collection_id: str) -> Collectio
     machine_id = _optional_text(ctx.options.get(MACHINE_ID_OPTION)) or _optional_text(
         system.get("hostname")
     )
-    boot_id = _optional_text(ctx.options.get(BOOT_ID_OPTION)) or _optional_text(
+    boot_raw = _optional_text(ctx.options.get(BOOT_ID_OPTION)) or _optional_text(
         system.get("boot_id")
     )
-    if not machine_id or not boot_id:
+    if not machine_id or not boot_raw:
         raise DeliveryError(
             "没有可用的 machine_id 与 boot_id：采集记录不存在，系统信息里也没有 hostname / boot_id"
         )
+    try:
+        boot_id = normalize_boot_id(boot_raw)
+    except ValueError as error:
+        raise DeliveryError(f"系统信息里的 boot_id 不合法：{error}") from error
     return CollectionRef(
         collection_id=collection_id,
         machine_id=machine_id if machine_id.startswith("machine:") else f"machine:{machine_id}",
@@ -544,7 +553,11 @@ def _read_entities(path: Path) -> list[BaseModel]:
     return rows
 
 
-def _extra_artifacts(options: Mapping[str, Any]) -> list[PackagingArtifact]:
+def _extra_artifacts(
+    options: Mapping[str, Any],
+    *,
+    scratch_dir: Path,
+) -> list[PackagingArtifact]:
     raw = options.get("artifacts") or ()
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
         raise DeliveryError("delivery.artifacts 必须是列表")
@@ -558,7 +571,7 @@ def _extra_artifacts(options: Mapping[str, Any]) -> list[PackagingArtifact]:
             raise DeliveryError("delivery.artifacts 的每一项都需要 source 与 path")
         artifacts.append(
             PackagingArtifact(
-                source=Path(source),
+                source=_artifact_source(source, scratch_dir),
                 path=path,
                 media_type=str(item.get("media_type", "application/octet-stream")),
                 description=_optional_text(item.get("description")),
@@ -567,8 +580,57 @@ def _extra_artifacts(options: Mapping[str, Any]) -> list[PackagingArtifact]:
     return artifacts
 
 
+def _artifact_source(raw: str, scratch_dir: Path) -> Path:
+    """把原始文件路径限制在本次采集的临时目录内。
+
+    相对路径按临时目录解析。``resolve`` 会展开符号链接，所以临时目录内指向外部的链接也会被
+    拒绝：打包直接读文件，不能接受调用方提供的任意绝对路径。
+    """
+    root = scratch_dir.resolve()
+    path = Path(raw)
+    candidate = (path if path.is_absolute() else root / path).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise DeliveryError(
+            f"delivery.artifacts 的 source 必须位于本次采集的临时目录内：{raw!r}"
+        ) from None
+    return candidate
+
+
 def _record_mapping(record: Record) -> dict[str, Any]:
     return record.model_dump(mode="json")
+
+
+def _sampling_records(ctx: PhaseContext) -> list[dict[str, Any]]:
+    """读回 In Progress 采样时落在临时目录里的记录。
+
+    记录使用 JSONL 而不是塞进任务行：一次 30 秒的采样可能有上千条 Metric，写进
+    ``jobs.payload`` 会让任务表迅速膨胀。文件路径随采集记录持久化，重试时仍然可读。
+    """
+    state = _mapping(ctx.data.get(SAMPLING_OPTION))
+    raw = _optional_text(state.get("records_file"))
+    if raw is None:
+        return []
+    path = Path(raw)
+    if not path.is_file():
+        raise DeliveryError(f"采样记录文件不存在：{path}")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise DeliveryError(f"读不到采样记录文件 {path}：{error}") from error
+    records: list[dict[str, Any]] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise DeliveryError(f"采样记录文件第 {number} 行不是合法 JSON：{error}") from error
+        if not isinstance(payload, Mapping):
+            raise DeliveryError(f"采样记录文件第 {number} 行不是对象：{path}")
+        records.append(dict(payload))
+    return records
 
 
 def _unique_record_mappings(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

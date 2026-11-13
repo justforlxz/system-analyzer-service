@@ -5,10 +5,10 @@ import { DiagnosticsView } from "@/components/diagnostics/diagnostics-view";
 import {
   describeError,
   fetchCollections,
+  fetchCursor,
   fetchDiagnosticServices,
   fetchMachine,
   fetchServiceDiagnostics,
-  fetchTracks,
   type CollectionResponse,
   type MachineResponse,
   type ServiceDiagnosticsResponse,
@@ -99,10 +99,10 @@ async function loadDiagnostics(
   atNs: number | null,
 ): Promise<DiagnosticsData> {
   try {
-    const [machine, services, tracks] = await Promise.all([
+    const [machine, services, cursor] = await Promise.all([
       fetchMachine(machineId),
       fetchDiagnosticServices(machineId, bootId),
-      fetchTracks(machineId, bootId),
+      fetchCursor(machineId, bootId),
     ]);
     if (services.services.length === 0) {
       return {
@@ -122,8 +122,8 @@ async function loadDiagnostics(
     const target = requestedEntity ?? services.services[0].entity;
     const diagnostics = await fetchServiceDiagnostics(machineId, bootId, target, { atNs });
     const axis =
-      tracks.axis_start_ns !== null && tracks.axis_end_ns !== null
-        ? { startNs: tracks.axis_start_ns, endNs: tracks.axis_end_ns }
+      cursor.start_ns !== null && cursor.end_ns !== null
+        ? { startNs: cursor.start_ns, endNs: cursor.end_ns }
         : null;
     return {
       ok: true,

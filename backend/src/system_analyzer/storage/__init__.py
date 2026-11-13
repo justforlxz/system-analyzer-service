@@ -13,6 +13,7 @@
 
 from system_analyzer.storage.models import Base, ImportStatus
 from system_analyzer.storage.store import (
+    INTERNAL_IMPORT_FAILURE_MESSAGE,
     CollectionState,
     DiagnosticStore,
     ImportOutcome,
@@ -22,6 +23,7 @@ from system_analyzer.storage.store import (
 )
 
 __all__ = [
+    "INTERNAL_IMPORT_FAILURE_MESSAGE",
     "Base",
     "CollectionState",
     "DiagnosticStore",

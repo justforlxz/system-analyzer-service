@@ -102,7 +102,78 @@ async def test_create_task_enqueues_a_collect_job() -> None:
     UUID(body["run_id"])  # 缺省由服务端生成，且必须是 UUID（会拼进 Worker 的临时目录名）
     kind, payload = queue.enqueued[0]
     assert kind == COLLECTION_JOB_KIND
-    assert payload == {"target_id": "target:1", "run_id": body["run_id"]}
+    assert payload == {"target_id": "target:1", "run_id": body["run_id"], "options": {}}
+
+
+async def test_create_task_passes_collection_options_to_the_worker() -> None:
+    """LightDM 自动登录与回传都靠 options 打开，接口不能把它们丢掉。"""
+    queue = FakeJobQueue()
+    targets = FakeTargets()
+    targets.known.add("target:1")
+    options = {
+        "backup_paths": ["/etc/systemd/system.conf"],
+        "desktop_user": "uos",
+        "delivery": {"remote_path": "/var/tmp/collection.bootrec"},
+    }
+    async with task_client(queue, targets) as client:
+        response = await client.post(
+            "/api/collection-tasks", json={"target_id": "target:1", "options": options}
+        )
+
+    assert response.status_code == 202
+    assert queue.enqueued[0][1]["options"] == options
+
+
+async def test_create_task_drops_worker_internal_options() -> None:
+    """``options`` 只放行调用方可以设置的键，Worker 内部键一律丢弃。
+
+    ``database_url`` 会让 Worker 连接调用方指定的数据库，``artifacts`` 会让打包读取 Worker
+    主机上的任意文件；这类键不能从接口进入任务 payload。
+    """
+    queue = FakeJobQueue()
+    targets = FakeTargets()
+    targets.known.add("target:1")
+    options = {
+        "backup_paths": ["/etc/systemd/system.conf"],
+        "desktop_user": "uos",
+        "desktop_login_timeout": 30,
+        "phase_timeouts": {"in_progress": 60},
+        "delivery": {
+            "remote_path": "/var/tmp/collection.bootrec",
+            "stage_local_pack": True,
+            "retry_delay_seconds": 0.5,
+            "download_attempts": 3,
+            "database_url": "postgresql+asyncpg://attacker@203.0.113.9/leak",
+            "collection_id": "collection:attacker",
+            "journal_export": "/etc/shadow",
+            "journal_work_dir": "/etc",
+            "artifacts": [{"source": "/etc/shadow", "path": "artifacts/shadow"}],
+        },
+        "database_url": "postgresql+asyncpg://attacker@203.0.113.9/leak",
+        "collection_id": "collection:attacker",
+        "machine_id": "machine:attacker",
+        "boot_id": "attacker",
+        "journal_work_dir": "/etc",
+        "work_dir": "/etc",
+    }
+    async with task_client(queue, targets) as client:
+        response = await client.post(
+            "/api/collection-tasks", json={"target_id": "target:1", "options": options}
+        )
+
+    assert response.status_code == 202
+    assert queue.enqueued[0][1]["options"] == {
+        "backup_paths": ["/etc/systemd/system.conf"],
+        "desktop_user": "uos",
+        "desktop_login_timeout": 30,
+        "phase_timeouts": {"in_progress": 60},
+        "delivery": {
+            "remote_path": "/var/tmp/collection.bootrec",
+            "stage_local_pack": True,
+            "retry_delay_seconds": 0.5,
+            "download_attempts": 3,
+        },
+    }
 
 
 async def test_create_task_keeps_a_supplied_run_id() -> None:

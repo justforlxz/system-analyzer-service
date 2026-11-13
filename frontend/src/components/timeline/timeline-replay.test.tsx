@@ -9,6 +9,7 @@ import {
   AXIS_END,
   AXIS_START,
   makeCursor,
+  makeEvent,
   makeEventTrack,
   makeMetricTrack,
   makeSpan,
@@ -437,5 +438,58 @@ describe("TimelineReplay", () => {
     const badge = screen.getByTestId("track-open-span");
     expect(badge).toHaveTextContent("未闭合 1 段");
     expect(badge.getAttribute("title")).toContain("采集结束时仍在进行");
+  });
+});
+
+describe("TimelineReplay 在真实规模下的渲染上限", () => {
+  it("首屏直接使用后端回显的窗口，不会再把整条轴当成当前窗口", async () => {
+    stubApi({});
+    renderTimeline(
+      makeTracksResponse({
+        window_start_ns: 2_000_000_000,
+        window_end_ns: 4_000_000_000,
+      }),
+    );
+
+    expect(screen.getByTestId("window-range-exact")).toHaveTextContent("2000000000 → 4000000000");
+    expect(screen.getByTestId("metric-chart")).toHaveAttribute("data-window-start", "2000000000");
+  });
+
+  it("事件轨道超过上限时先显示 20 条，点按钮再看剩下的", async () => {
+    const tracks = Array.from({ length: 25 }, (_, index) =>
+      makeEventTrack({
+        track_id: `event:systemd:systemd.units:service:unit-${index}.service`,
+        entity: `service:unit-${index}.service`,
+        items: [makeEvent({ record_id: `event-${index}` })],
+      }),
+    );
+    stubApi({});
+    renderTimeline(makeTracksResponse({ tracks }));
+
+    expect(screen.getAllByTestId("track-row")).toHaveLength(20);
+    const more = screen.getByTestId("show-more-tracks");
+    expect(more).toHaveTextContent("还有 5 条");
+
+    await userEvent.click(more);
+    expect(screen.getAllByTestId("track-row")).toHaveLength(25);
+  });
+
+  it("关键事件列表最多渲染 200 条，并说明当前窗口的总数", async () => {
+    const items = Array.from({ length: 250 }, (_, index) =>
+      makeEvent({
+        record_id: `event-${index}`,
+        monotonic_ns: 1_000_000_000 + index * 1_000_000,
+      }),
+    );
+    stubApi({});
+    renderTimeline(
+      makeTracksResponse({
+        tracks: [makeEventTrack({ items })],
+        items,
+      }),
+    );
+
+    expect(screen.getAllByTestId("event-jump")).toHaveLength(200);
+    expect(screen.getByText(/当前窗口共有 250 条事件/)).toBeInTheDocument();
   });
 });

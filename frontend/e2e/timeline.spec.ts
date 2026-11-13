@@ -235,7 +235,7 @@ test.describe("统一时间线回放", () => {
     await page.goto("/timeline");
 
     await expect(page.getByTestId("boot-picker")).toBeVisible();
-    const link = page.locator('a[href*="boot_id=boot-full"]');
+    const link = page.locator('a[href^="/timeline?"][href*="boot_id=boot-full"]');
     await expect(link).toBeVisible();
     await link.click();
     await expect(page.getByTestId("timeline-replay")).toBeVisible();

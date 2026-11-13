@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shlex
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -30,10 +31,28 @@ from system_analyzer.collection.lightdm import (
     LIGHTDM_STATE_COMMAND,
     SESSIONS_COMMAND,
 )
+from system_analyzer.collection.packaging import collect_journal
+from system_analyzer.domain.bootrec import CollectionMode, CollectionRef, compute_record_id
+from system_analyzer.plugins.contracts import (
+    PLUGIN_API_VERSION,
+    CollectRequest,
+    CollectResult,
+    PluginBase,
+    PluginContext,
+    PluginKind,
+    PluginSpec,
+)
 from system_analyzer.remote.client import CommandResult
 from system_analyzer.remote.probe import SYSTEM_INFO_COMMAND
 
-PROBE_STDOUT_TEMPLATE = "hostname={hostname}\nos_release=UOS 25\nkernel_version=6.1.0\n"
+LIFECYCLE_BOOT_ID = "7f2c5d4e-9a1b-4c3d-8e2f-1a2b3c4d5e6f"
+"""与 ``fixtures/systemd_lifecycle/boot.export`` 一致的启动标识。"""
+
+JOURNAL_EXPORT_FIXTURE = Path(__file__).parent / "fixtures" / "systemd_lifecycle" / "boot.export"
+
+PROBE_STDOUT_TEMPLATE = (
+    "hostname={hostname}\nboot_id={boot_id}\nos_release=UOS 25\nkernel_version=6.1.0\n"
+)
 
 ENVIRONMENT_STDOUT = """systemd_version=systemd 255 (255.2-4deepin84)
 cgroup_filesystem=cgroup2fs
@@ -173,7 +192,10 @@ class RecordingSshClient:
     def _run(self, command: str, *, privileged: bool) -> CommandResult:
         """按命令内容模拟目标机器，返回与真实命令一致的结果。"""
         if command == SYSTEM_INFO_COMMAND:
-            return self._result(command, PROBE_STDOUT_TEMPLATE.format(hostname=self.hostname))
+            return self._result(
+                command,
+                PROBE_STDOUT_TEMPLATE.format(hostname=self.hostname, boot_id=LIFECYCLE_BOOT_ID),
+            )
         if command == ENVIRONMENT_COMMAND:
             return self._result(command, ENVIRONMENT_STDOUT)
         if command == LIGHTDM_STATE_COMMAND:
@@ -473,3 +495,103 @@ class FakeConnector:
         for client in self.clients[target_id]:
             merged.update(client.modes)
         return merged
+
+
+class FakeResourceCollector(PluginBase):
+    """假资源采集器：记录调用参数，并写一条合法的 Metric 记录。"""
+
+    spec = PluginSpec(
+        id="resource-sampler",
+        kind=PluginKind.COLLECTOR,
+        name="假资源采集",
+        version="1.0.0",
+        api_version=PLUGIN_API_VERSION,
+        capabilities=("system.resources",),
+        config_schema={
+            "type": "object",
+            "properties": {"database_url": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    )
+
+    def __init__(self) -> None:
+        self.requests: list[CollectRequest] = []
+        self.configs: list[dict[str, Any]] = []
+
+    def collect(self, request: CollectRequest, context: PluginContext) -> CollectResult:
+        self.requests.append(request)
+        self.configs.append(dict(context.config))
+        options = request.options
+        body = {
+            "kind": "metric",
+            "machine_id": options["machine_id"],
+            "boot_id": options["boot_id"],
+            "collection_id": options["collection_id"],
+            "source_plugin": self.spec.id,
+            "stream_id": "cpu.total",
+            "monotonic_ns": 2_000_000_000,
+            "realtime_ns": 1_794_192_001_000_000_000,
+            "clock_domain": "boot_monotonic",
+            "entity": "metric:cpu.total.utilization",
+            "payload": {
+                "name": "cpu.total.utilization",
+                "unit": "percent",
+                "value": 12.5,
+            },
+        }
+        written = context.data.append_records(
+            [{"record_id": compute_record_id(body), **body}],
+            plugin_id=self.spec.id,
+            source=request.run_id,
+        )
+        return CollectResult(records_written=written)
+
+
+class FakeJournalCollector(PluginBase):
+    """假 Journal 采集器：把固定导出文件与游标记录写进本次采集的工作目录。"""
+
+    spec = PluginSpec(
+        id="journal.remote",
+        kind=PluginKind.COLLECTOR,
+        name="假 Journal 采集",
+        version="1.0.0",
+        api_version=PLUGIN_API_VERSION,
+        capabilities=("journal.remote",),
+    )
+
+    def __init__(self) -> None:
+        self.requests: list[CollectRequest] = []
+
+    def collect(self, request: CollectRequest, context: PluginContext) -> CollectResult:
+        self.requests.append(request)
+        work_dir = Path(request.options["work_dir"])
+        work_dir.mkdir(parents=True, exist_ok=True)
+        export = work_dir / f"journal-{request.run_id}.export"
+        export.write_text(
+            JOURNAL_EXPORT_FIXTURE.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        cursor = work_dir / f"journal-{request.run_id}.cursor.json"
+        cursor.write_text(
+            json.dumps({"export_file": export.name, "entities_file": None}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        collection = CollectionRef(
+            collection_id=str(request.options["collection_id"]),
+            machine_id=str(request.options["machine_id"]),
+            boot_id=str(request.options["boot_id"]),
+            mode=CollectionMode.SSH_COLLECTION,
+            created_realtime_ns=None,
+        )
+        journal = collect_journal(
+            export,
+            collection=collection,
+            machine_id=collection.machine_id,
+            boot_id=collection.boot_id,
+        )
+        written = context.data.append_records(
+            journal.records,
+            plugin_id=self.spec.id,
+            source=request.run_id,
+        )
+        return CollectResult(records_written=written, artifacts=(str(export), str(cursor)))

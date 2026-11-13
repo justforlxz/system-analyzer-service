@@ -58,6 +58,7 @@ async def create_collection_task(
     payload = {
         "target_id": body.target_id,
         "run_id": str(body.run_id) if body.run_id is not None else str(uuid4()),
+        "options": body.options,
     }
     job_id = await queue.enqueue(COLLECTION_JOB_KIND, payload)
     record = await queue.get(job_id)

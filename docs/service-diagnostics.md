@@ -88,6 +88,14 @@
 `DiagnosticStore.ensure_entities` 只向已有采集所属的启动补实体，唯一键冲突时跳过，重复分析不会重复
 写实体；记录写入仍由原有 `append_records` 的幂等规则负责。
 
+SSH 采集任务在 `delivery.status` 为 `imported` 或 `already_imported` 后同样会入队一次
+`analysis.run`（`collection/jobs.py`）。入队按 `collection_id` 去重，同一份采集重试时复用已有
+分析任务；入队失败只记录到任务结果的 `analysis_enqueue_error`，不把已经成功的采集判成失败。
+
+服务列表接口只读 `span` 与 `annotation` 记录，事件与采样点不参与服务清单；记录汇总在 Worker
+线程执行。真实采集 72495 条记录、2279 个服务时，列表接口约 0.32 秒，期间 `/api/health` 保持
+毫秒级响应。单个服务的诊断接口仍要读取整次启动的事件与采样点，真实数据上约 5 秒。
+
 ## 6. 验证
 
 ```bash

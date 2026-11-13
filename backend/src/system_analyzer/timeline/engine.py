@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
@@ -57,6 +58,17 @@ from system_analyzer.timeline.models import (
 
 TIMELINE_KINDS: tuple[RecordKind, ...] = (RecordKind.EVENT, RecordKind.SPAN, RecordKind.METRIC)
 """本任务产出轨道的记录种类。Profile、Annotation、Artifact 的展示属于 2.x 与 4.x。"""
+
+DEFAULT_AXIS_CACHE_SECONDS = 10.0
+"""整条轴的进程内缓存时间（秒）。
+
+一次真实采集可能有数万条 Journal 记录，读取并排序整次启动的数据需要数秒。回放时每一帧都会
+调用 ``state_at``，窗口变化也会反复调用 ``tracks``；如果没有缓存，界面每操作一次都要重新读
+一遍全部记录。缓存只保存读出来的轴，不改变任何字段的推导规则。
+
+导入完成后数据会变，但 API 与 Worker 是两个进程，没有可靠的跨进程失效通知。这里用较短的
+存活时间限制陈旧窗口：最坏情况下界面在导入完成后的十秒内仍看到上一次的轴，刷新即可恢复。
+"""
 
 _KIND_BY_VALUE: dict[str, RecordKind] = {kind.value: kind for kind in TIMELINE_KINDS}
 """``kinds`` 的白名单：先查这里再转换，拼错的值也走本模块的异常（见 ``_wanted_kinds``）。"""
@@ -101,8 +113,15 @@ class TimelineReader(Protocol):
 class TimelineEngine:
     """统一时间线查询与回放。"""
 
-    def __init__(self, reader: TimelineReader) -> None:
+    def __init__(
+        self,
+        reader: TimelineReader,
+        *,
+        axis_cache_seconds: float = DEFAULT_AXIS_CACHE_SECONDS,
+    ) -> None:
         self._reader = reader
+        self._axis_cache_seconds = max(0.0, axis_cache_seconds)
+        self._axis_cache: dict[tuple[str, str], tuple[float, _Axis]] = {}
 
     # ------------------------------------------------------------------
     # 轨道数据
@@ -116,6 +135,7 @@ class TimelineEngine:
         start_ns: int | None = None,
         end_ns: int | None = None,
         kinds: Sequence[RecordKind] | None = None,
+        include_attributes: bool = True,
     ) -> TimelineTracks:
         """一次启动在 ``[start_ns, end_ns]`` 内的轨道数据。
 
@@ -127,11 +147,27 @@ class TimelineEngine:
 
         与窗口有交集就被返回：一条区间从窗口之前开始、在窗口之中结束，仍然在结果里，否则
         界面会把「当时一直活着的服务」画成不存在。
+
+        ``include_attributes`` 为 false 时，事件与区间的 ``attributes`` 返回空对象。界面只用
+        条目自身的定位与展示字段，而 Journal 事件的 ``attributes`` 带着整份原始字段，真实采集
+        下会让响应体膨胀到数百兆。默认仍为 true，保持 1.5 的接口形状不变。
         """
         _check_window(start_ns, end_ns)
         window = _Window(start_ns, end_ns)
         wanted = _wanted_kinds(kinds)
-        axis = await self._axis(machine_id, boot_id, wanted)
+        axis = await self._axis(machine_id, boot_id)
+        wanted_items = tuple(item for item in axis.items if _kind_of(item) in wanted)
+        if not include_attributes:
+            wanted_items = tuple(_without_attributes(item) for item in wanted_items)
+        tracks = tuple(track for track in axis.tracks if track.kind in wanted)
+        if not include_attributes:
+            tracks = tuple(
+                replace(track, items=tuple(_without_attributes(item) for item in track.items))
+                for track in tracks
+            )
+        wall_items = tuple(item for item in axis.wall_clock_items if _kind_of(item) in wanted)
+        if not include_attributes:
+            wall_items = tuple(_without_attributes(item) for item in wall_items)
         return TimelineTracks(
             machine_id=machine_id,
             boot_id=boot_id,
@@ -144,11 +180,11 @@ class TimelineEngine:
                     track,
                     items=tuple(item for item in track.items if window.contains(item)),
                 )
-                for track in axis.tracks
+                for track in tracks
             ),
-            items=tuple(item for item in axis.items if window.contains(item)),
+            items=tuple(item for item in wanted_items if window.contains(item)),
             # 只有墙钟的记录没有 boot 内位置，跟单调时间范围没有可比性，按原样返回
-            wall_clock_items=axis.wall_clock_items,
+            wall_clock_items=wall_items,
             resources=axis.resources,
             clock=axis.clock,
         )
@@ -165,7 +201,7 @@ class TimelineEngine:
 
         时刻早于全部数据时，状态为空，但轨道本身仍然列出：没有数据不等于这条轨道不存在。
         """
-        axis = await self._axis(machine_id, boot_id, TIMELINE_KINDS)
+        axis = await self._axis(machine_id, boot_id)
         return TimelineState(
             machine_id=machine_id,
             boot_id=boot_id,
@@ -186,7 +222,7 @@ class TimelineEngine:
 
         可停靠的时刻是数据发生变化的所有时刻：事件与采样点的时刻、区间的起止时刻。
         """
-        axis = await self._axis(machine_id, boot_id, TIMELINE_KINDS)
+        axis = await self._axis(machine_id, boot_id)
         times = axis.stop_times
         if not times:
             return TimeCursor(
@@ -221,13 +257,18 @@ class TimelineEngine:
     # 内部实现
     # ------------------------------------------------------------------
 
-    async def _axis(self, machine_id: str, boot_id: str, wanted: Sequence[RecordKind]) -> _Axis:
-        """一次启动的整条轴。
+    async def _axis(self, machine_id: str, boot_id: str) -> _Axis:
+        """一次启动的整条轴，带短时间的进程内缓存。
 
-        ``wanted`` 只决定返回哪些轨道与条目。窗口终点、锚点候选、轴的起止这些「整次启动」
-        的推导量一律从全部记录算：它们必须与轨道筛选、与查询范围都无关，否则同一条开放区间
-        在不同调用里会得到不同长度（time-base 第 6 节），漂移也会随筛选翻转（第 4.4 节）。
+        轨道筛选与时间窗口都不参与缓存键：轴的起止、开放区间收尾、锚点与漂移、可停靠时刻
+        必须与筛选和查询范围无关（time-base 第 6、4.4 节）。缓存的就是这份与查询无关的轴，
+        调用方再按自己的 ``kinds`` 与窗口裁剪。
         """
+        key = (machine_id, boot_id)
+        now = time.monotonic()
+        cached = self._axis_cache.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
         boot = await self._reader.get_boot(machine_id, boot_id)
         if boot is None:
             raise TimelineBootNotFoundError(
@@ -239,11 +280,7 @@ class TimelineEngine:
         wall_records = await self._reader.list_records_in_boot(
             machine_id, boot_id, clock_domain=_WALL_REALTIME, kinds=list(TIMELINE_KINDS)
         )
-        streams = (
-            await self._reader.list_metric_streams(machine_id, boot_id)
-            if RecordKind.METRIC in wanted
-            else []
-        )
+        streams = await self._reader.list_metric_streams(machine_id, boot_id)
         collections = await self._reader.list_collections(machine_id=machine_id, boot_id=boot_id)
         _require_scope(records, machine_id, boot_id)
         _require_scope(wall_records, machine_id, boot_id)
@@ -254,17 +291,30 @@ class TimelineEngine:
         wall_items = _sorted_items(
             _items(wall_records, wall_windows, _WALL_REALTIME), _WALL_REALTIME
         )
-        items = tuple(item for item in axis_items if _kind_of(item) in wanted)
-        return _Axis(
-            tracks=_tracks(items, streams),
-            items=items,
-            wall_clock_items=tuple(item for item in wall_items if _kind_of(item) in wanted),
+        axis = _Axis(
+            tracks=_tracks(axis_items, streams),
+            items=tuple(axis_items),
+            wall_clock_items=tuple(wall_items),
             start_ns=_axis_start(axis_items),
             end_ns=_axis_end(axis_items),
             stop_times=_stop_times(axis_items),
             resources=_resources(collections),
             clock=_clock(boot, records),
         )
+        if self._axis_cache_seconds > 0:
+            self._axis_cache[key] = (now + self._axis_cache_seconds, axis)
+            self._prune_axis_cache(now)
+        return axis
+
+    def _prune_axis_cache(self, now: float) -> None:
+        """丢掉过期条目；条目数超过上限时再丢掉最早到期的那一条。"""
+        expired = [key for key, (expires, _axis) in self._axis_cache.items() if expires <= now]
+        for key in expired:
+            self._axis_cache.pop(key, None)
+        if len(self._axis_cache) <= 16:
+            return
+        oldest = min(self._axis_cache, key=lambda key: self._axis_cache[key][0])
+        self._axis_cache.pop(oldest, None)
 
 
 # ----------------------------------------------------------------------
@@ -335,6 +385,13 @@ def _kind_of(item: AxisItem) -> RecordKind:
     if isinstance(item, TimelineEvent):
         return RecordKind.EVENT
     return RecordKind.SPAN
+
+
+def _without_attributes(item: AxisItem) -> AxisItem:
+    """去掉事件与区间的 ``attributes``，保留定位与展示字段。"""
+    if isinstance(item, (TimelineEvent, TimelineSpan)):
+        return replace(item, attributes={})
+    return item
 
 
 # ----------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""生成 ``docs/samples/bootrec-v1`` 下的三份最小 ``.bootrec`` 样例。
+"""生成 ``docs/samples/bootrec-v1`` 下的四份最小 ``.bootrec`` 样例。
 
 用法（在 ``backend`` 目录下）：``uv run python -m system_analyzer.tools.make_bootrec_samples``，
 写文件到仓库的 ``docs/samples/bootrec-v1/``；加 ``--check`` 只比对不写入，仓库中的样例与
@@ -624,15 +624,107 @@ def build_resources_missing() -> bytes:
     )
 
 
+def build_no_data() -> bytes:
+    """声明可用但没有采样点的样例：``load.1min`` 一条记录都没有，时间线应报 ``no_data``。
+
+    这条流在实体里明确写着 ``available = true``（采集确实声明了要采），但 ``records.jsonl``
+    里没有任何它的采样点。它既不是「不可用」（没有 ``unavailable_reason``），也不能画成 0，
+    这正是 ``docs/timeline-query.md`` 第 4 节的第三种轨道状态。
+    """
+    collection_id = "collection:no-data-0001"
+    entities = _jsonl(
+        [
+            _machine_entity(),
+            _boot_entity(),
+            _service_entity("nginx.service"),
+            _stream_entity("cpu.total.utilization", "percent"),
+            _stream_entity("load.1min", "count"),
+        ]
+    )
+    unit_started = _record(
+        "event",
+        collection_id=collection_id,
+        source_plugin="systemd",
+        stream_id="systemd.units",
+        monotonic_ns=1_200_000_000,
+        realtime_offset_ms=1200,
+        entity="service:nginx.service",
+        payload={
+            "event_type": "systemd.unit.started",
+            "severity": "info",
+            "message": "Started A high performance web server and a reverse proxy server.",
+            "attributes": {"unit": "nginx.service"},
+        },
+    )
+    span_nginx = _record(
+        "span",
+        collection_id=collection_id,
+        source_plugin="systemd",
+        stream_id="systemd.units",
+        monotonic_ns=1_200_000_000,
+        realtime_offset_ms=1200,
+        entity="service:nginx.service",
+        payload={
+            "span_type": "service.active",
+            "end_monotonic_ns": 4_000_000_000,
+            "end_realtime_ns": REALTIME_BASE_NS + 4000 * 1_000_000,
+            "state": "active",
+        },
+    )
+    records = _jsonl(
+        [
+            unit_started,
+            span_nginx,
+            _metric(collection_id, "cpu.total.utilization", "percent", 7.25, 1),
+            _metric(collection_id, "cpu.total.utilization", "percent", 11.5, 2),
+            _metric(collection_id, "cpu.total.utilization", "percent", 9.0, 3),
+        ]
+    )
+    journal = _jsonl(
+        [
+            {
+                "boot_id": BOOT_ID,
+                "realtime_ns": REALTIME_BASE_NS + 1200 * 1_000_000,
+                "monotonic_ns": 1_200_000_000,
+                "priority": 6,
+                "message": "Started A high performance web server and a reverse proxy server.",
+                "cursor": "s=0021; i=1",
+                "unit": "nginx.service",
+                "identifier": "systemd",
+                "fields": {"_SYSTEMD_UNIT": "nginx.service"},
+            }
+        ]
+    )
+    manifest = _manifest(
+        collection_id=collection_id,
+        mode="ssh_collection",
+        resources_available=True,
+        resources_reason=None,
+        journal_included=True,
+        entities=entities,
+        records=records,
+        journal=journal,
+    )
+    return _zip(
+        {
+            "manifest.json": manifest,
+            "entities.jsonl": entities,
+            "records.jsonl": records,
+            "journal.jsonl": journal,
+        }
+    )
+
+
 BUILDERS = {
     "full.bootrec": build_full,
     "journal-only.bootrec": build_journal_only,
     "resources-missing.bootrec": build_resources_missing,
+    "no-data.bootrec": build_no_data,
 }
 
 
 def build_samples() -> dict[str, bytes]:
-    """三份样例的文件名与字节内容。"""
+    """四份样例的文件名与字节内容。"""
     return {name: builder() for name, builder in BUILDERS.items()}
 
 

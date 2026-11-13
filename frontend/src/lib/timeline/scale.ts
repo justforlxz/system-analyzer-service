@@ -9,6 +9,10 @@ export type WindowRange = { startNs: number; endNs: number };
 /** 允许缩到的最小跨度：1 毫秒。再小没有观察意义，也会放大 int64 在 JSON 里的表示误差。 */
 export const MIN_WINDOW_NS = 1_000_000;
 
+/** 首屏默认窗口：轴末尾 60 秒。真实采集的 Journal 可能覆盖数天，一次取整条轴会把几十万条
+ * 记录搬进浏览器；默认停在采集窗口附近，用户仍可缩放或点「全览」查看整条轴。 */
+export const DEFAULT_INITIAL_WINDOW_NS = 60_000_000_000;
+
 /** 窗口的实际跨度。起点与终点相同时返回 1，避免除零。 */
 export function windowSpan(range: WindowRange): number {
   return Math.max(1, range.endNs - range.startNs);
@@ -91,4 +95,13 @@ export function windowAround(
 ): WindowRange {
   const startNs = Math.round(centerNs - spanNs / 2);
   return clampWindow(startNs, startNs + spanNs, axis, minSpanNs);
+}
+
+/** 取轴末尾的一段窗口；轴跨度不足时直接返回整条轴。 */
+export function tailWindow(
+  axis: WindowRange,
+  spanNs: number = DEFAULT_INITIAL_WINDOW_NS,
+): WindowRange {
+  const startNs = Math.max(axis.startNs, axis.endNs - Math.max(1, Math.round(spanNs)));
+  return { startNs, endNs: axis.endNs };
 }

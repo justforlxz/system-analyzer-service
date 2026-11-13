@@ -251,7 +251,13 @@ export function fetchImportStatus(jobId: string): Promise<ImportStatusResponse> 
 // 时间线（任务 4.2）
 // ----------------------------------------------------------------------
 
-export type TracksOptions = { startNs?: number | null; endNs?: number | null; kinds?: string[] };
+export type TracksOptions = {
+  startNs?: number | null;
+  endNs?: number | null;
+  kinds?: string[];
+  /** 是否返回事件与区间的 attributes；界面不用它们，默认关闭以缩小响应。 */
+  includeAttributes?: boolean;
+};
 
 export function fetchTracks(
   machineId: string,
@@ -262,6 +268,9 @@ export function fetchTracks(
   if (typeof options.startNs === "number") params.set("start_ns", String(options.startNs));
   if (typeof options.endNs === "number") params.set("end_ns", String(options.endNs));
   if (options.kinds && options.kinds.length > 0) params.set("kinds", options.kinds.join(","));
+  if (options.includeAttributes !== undefined) {
+    params.set("include_attributes", String(options.includeAttributes));
+  }
   const query = params.toString();
   return getJson<TracksResponse>(
     `${timelinePath(machineId, bootId)}/tracks${query ? `?${query}` : ""}`,

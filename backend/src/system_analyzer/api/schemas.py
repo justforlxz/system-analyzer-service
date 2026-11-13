@@ -11,11 +11,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from system_analyzer.domain.bootrec import (
     BootEntity,
@@ -530,6 +531,46 @@ class TestConnectionResponse(BaseModel):
     failure: TestConnectionFailure | None = None
 
 
+PUBLIC_COLLECTION_OPTIONS = frozenset(
+    {
+        "backup_paths",
+        "desktop_user",
+        "desktop_login_timeout",
+        "phase_timeouts",
+        "delivery",
+    }
+)
+"""采集任务接口允许调用方设置的选项。"""
+
+PUBLIC_DELIVERY_OPTIONS = frozenset(
+    {
+        "remote_path",
+        "stage_local_pack",
+        "retry_delay_seconds",
+        "download_attempts",
+    }
+)
+"""``options.delivery`` 里允许调用方设置的子项。
+
+其余键是 Worker 内部编排使用的，必须在接口处丢掉：``database_url`` 会让 Worker 连接调用方
+指定的数据库，``artifacts`` 会让打包读取 Worker 主机上的任意文件，``collection_id`` /
+``machine_id`` / ``boot_id`` 会让调用方改写采集归属。
+"""
+
+
+def public_collection_options(options: Mapping[str, Any]) -> dict[str, Any]:
+    """只保留调用方可以设置的采集选项，丢掉 Worker 内部使用的键。"""
+    sanitized = {key: value for key, value in options.items() if key in PUBLIC_COLLECTION_OPTIONS}
+    delivery = sanitized.get("delivery")
+    if isinstance(delivery, Mapping):
+        sanitized["delivery"] = {
+            key: value for key, value in delivery.items() if key in PUBLIC_DELIVERY_OPTIONS
+        }
+    elif "delivery" in sanitized:
+        sanitized.pop("delivery")
+    return sanitized
+
+
 class CollectionTaskRequest(BaseModel):
     """提交一次采集任务。``target_id`` 必须是已经保存的目标机器。"""
 
@@ -538,6 +579,24 @@ class CollectionTaskRequest(BaseModel):
         None,
         description="采集任务 id，必须是 UUID；不传时由服务端生成",
     )
+    options: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "采集选项，只接受下列字段，其余键会被忽略："
+            "``backup_paths``（要备份并恢复的远端文件）、"
+            "``desktop_user`` / ``desktop_login_timeout``（LightDM 自动登录）、"
+            "``phase_timeouts``（各阶段时间上限）、"
+            "``delivery``（打包回传与导入的开关与远端路径，只接受 ``remote_path``、"
+            "``stage_local_pack``、``retry_delay_seconds``、``download_attempts``；"
+            "给了 ``remote_path`` 时默认先上传本地产出的包，显式传 ``stage_local_pack=false`` "
+            "才表示远端已经有包、只做下载）"
+        ),
+    )
+
+    @field_validator("options")
+    @classmethod
+    def _drop_internal_options(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return public_collection_options(value)
 
 
 class CollectionPhaseRecordResponse(BaseModel):

@@ -15,7 +15,9 @@
 - 「恢复环境」按记录把文件恢复原样（原先存在的写回内容与属性，原先不存在的删掉），
   重新加载 systemd 配置，最后删掉远端暂存目录。
 
-占位实现只剩 In Progress 的三步与 Post 的「停止采样」「收集数据」，归属见上面那段。
+5.1 把 In Progress 的三步接上了真实采集：资源采样与 Journal 采集由同步插件完成，
+``collection.sampling`` 负责在线程里调用它们并把记录落到本次采集的临时目录；
+Post 的「收集数据」再把这些记录与 Journal 导出文件一起打包回传。
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from system_analyzer.collection import staging
+from system_analyzer.collection import sampling, staging
 from system_analyzer.collection.accounting import enable_temporary_accounting
 from system_analyzer.collection.context import PhaseContext
 from system_analyzer.collection.delivery import DELIVERY_OPTION, deliver_from_context
@@ -179,7 +181,11 @@ async def apply_temporary_configuration(ctx: PhaseContext) -> None:
 
 
 async def start_sampling(_ctx: PhaseContext) -> None:
-    """占位：启动远程采样循环，由任务 3.4 填入。当前不改变目标机器。"""
+    """确认本次任务要采样，并记下 machine / boot / collection 三个标识。
+
+    任务没有配置 ``options.delivery`` 时只记一条「跳过」，不占用目标机器。
+    """
+    await sampling.start_sampling(_ctx)
 
 
 async def trigger_desktop_login(ctx: PhaseContext) -> None:
@@ -195,14 +201,16 @@ async def trigger_desktop_login(ctx: PhaseContext) -> None:
 
 
 async def collect_continuously(_ctx: PhaseContext) -> None:
-    """占位：在采样窗口内持续采集，由任务 3.4、3.5 填入。当前不改变目标机器。"""
+    """调用资源采样与 Journal 采集插件，把结果留在本次采集的临时目录里。"""
+    await sampling.collect_continuously(_ctx)
 
 
 # ---- Post：停止采样、收集数据、恢复环境 -----------------------------------
 
 
 async def stop_sampling(_ctx: PhaseContext) -> None:
-    """占位：停止采样循环，由任务 3.4 填入。当前不改变目标机器。"""
+    """确认一次性采样窗口已经结束；没有需要停止的后台进程。"""
+    await sampling.stop_sampling(_ctx)
 
 
 async def gather_collected_data(ctx: PhaseContext) -> None:

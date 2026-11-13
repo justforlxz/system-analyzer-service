@@ -19,7 +19,7 @@
 6. `artifacts/`
 7. 格式版本与向后兼容
 8. 完整性校验
-9. 三份样例
+9. 四份样例
 10. 与下游任务的接口约定
 11. 校验错误码
 
@@ -254,7 +254,7 @@ Journal 与记录的关系：Journal 条目本身是原始日志，独立成文�
   没有读权限或其它 `OSError` 报 `E_FILE_UNREADABLE`，ZIP 条目读取失败报 `E_ENTRY_UNREADABLE`，
   三者都返回校验报告，不向上抛异常。
 
-## 9. 三份样例
+## 9. 四份样例
 
 样例在 `docs/samples/bootrec-v1/`，由
 `cd backend && uv run python -m system_analyzer.tools.make_bootrec_samples` 生成，生成结果固定
@@ -265,8 +265,9 @@ Journal 与记录的关系：Journal 条目本身是原始日志，独立成文�
 | `full.bootrec` | 六种对象都有：Systemd 事件与 Span、CPU/内存/磁盘指标、perf Profile 与 Artifact、分析结论 Annotation、Journal | 通过；`资源数据: 有（metric 记录 9 条）` |
 | `journal-only.bootrec` | Journal 导入：只有从日志推导出来的事件，没有任何资源指标，没有 `metric_stream` 实体 | 通过；`资源数据: 无`（`resources.available=false` 且 0 条 metric） |
 | `resources-missing.bootrec` | 部分资源缺失：CPU 有采样；内存与磁盘两条流 `available=false` 并写明原因，且**没有**对应记录 | 通过；`不可用指标流: metric:disk.read_bytes_per_second, metric:memory.used` |
+| `no-data.bootrec` | 声明可用但没有采样点：`load.1min` 在实体里 `available=true`，`records.jsonl` 里没有任何它的采样点 | 通过；时间线里这条轨道的状态是 `no_data`（不是 0，也不是不可用） |
 
-三份样例的共同点：一台机器（`machine:uos-PC`）、一次启动（`3f1c9a52-…`）、一次采集；时间是固定
+四份样例的共同点：一台机器（`machine:uos-PC`）、一次启动（`3f1c9a52-…`）、一次采集；时间是固定
 的示例值（`1794009600000000000` 纳秒 = 2026-11-07T00:00:00Z），不是真实采集时间，不要用它做业务判断。
 
 看样例内容：

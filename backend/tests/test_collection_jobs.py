@@ -20,11 +20,13 @@ from system_analyzer.collection.environment import ENVIRONMENT_COMMAND
 from system_analyzer.collection.jobs import (
     COLLECTION_JOB_KIND,
     CollectionJobFailed,
+    _enqueue_analysis_after_delivery,
     collection_handlers,
     renew_job_lock,
     run_collection_job,
 )
-from system_analyzer.collection.record import CollectionRecord
+from system_analyzer.collection.orchestrator import CollectionOutcome
+from system_analyzer.collection.record import AttemptRecord, CollectionRecord
 from system_analyzer.collection.states import AttemptStatus, CollectionPhase, PhaseStatus
 from system_analyzer.core.config import Settings
 from system_analyzer.jobs.queue import Job
@@ -95,6 +97,44 @@ def test_collection_handlers_registers_the_collection_job_kind(tmp_path: Path) -
     handlers = collection_handlers(settings(), make_connector(), scratch_root=tmp_path)
 
     assert set(handlers) == {COLLECTION_JOB_KIND}
+
+
+def _outcome_with_delivery(status: str, **delivery: Any) -> CollectionOutcome:
+    record = CollectionRecord(run_id="run-1", target_id=TARGET)
+    attempt = AttemptRecord(attempt=1, status=AttemptStatus.SUCCEEDED)
+    attempt.data["system_info"] = {
+        "hostname": "uos-PC",
+        "boot_id": "abc7451f-65c8-4be8-ab01-4b9a1e49a8b9",
+    }
+    attempt.data["delivery"] = {"status": status, "collection_id": "collection:one", **delivery}
+    return CollectionOutcome(record=record, attempt=attempt, failure=None)
+
+
+async def test_imported_collection_enqueues_analysis_job() -> None:
+    """SSH 采集导入成功后与 API 导入一样排一次分析任务。"""
+    enqueued: list[dict[str, Any]] = []
+
+    async def enqueue(payload: dict[str, Any]) -> UUID:
+        enqueued.append(payload)
+        return UUID("11111111-1111-1111-1111-111111111111")
+
+    patch = await _enqueue_analysis_after_delivery(_outcome_with_delivery("imported"), enqueue)
+
+    assert enqueued == [
+        {
+            "machine_id": "machine:uos-PC",
+            "boot_id": "abc7451f-65c8-4be8-ab01-4b9a1e49a8b9",
+            "collection_id": "collection:one",
+        }
+    ]
+    assert patch == {"analysis_job_id": "11111111-1111-1111-1111-111111111111"}
+
+
+async def test_failed_delivery_does_not_enqueue_analysis() -> None:
+    async def enqueue(_payload: dict[str, Any]) -> UUID:  # pragma: no cover - 不该被调用
+        raise AssertionError("失败的采集不能排分析任务")
+
+    assert await _enqueue_analysis_after_delivery(_outcome_with_delivery("failed"), enqueue) == {}
 
 
 async def test_job_writes_record_to_task_result(tmp_path: Path) -> None:

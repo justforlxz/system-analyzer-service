@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from functools import partial
 from pathlib import Path
@@ -51,6 +51,8 @@ from system_analyzer.collection.record import CollectionRecord
 from system_analyzer.collection.states import AttemptStatus, CollectionPhase
 from system_analyzer.core.config import Settings, get_settings
 from system_analyzer.core.db import create_engine
+from system_analyzer.domain.time_base import normalize_boot_id
+from system_analyzer.jobs.models import ANALYSIS_JOB_KIND
 from system_analyzer.jobs.queue import Job, JobQueue, JobResultStore
 from system_analyzer.worker.runner import JobHandler
 
@@ -87,6 +89,7 @@ async def run_collection_job(
     queue: JobResultStore,
     scratch_root: Path,
     cancelled: CancelCheck | None = None,
+    enqueue_analysis: Callable[[dict[str, Any]], Awaitable[Any]] | None = None,
 ) -> CollectionOutcome:
     """执行一次采集尝试，并把记录写回任务行。
 
@@ -120,6 +123,12 @@ async def run_collection_job(
         cancelled=cancelled,
         save=save,
     )
+    analysis_patch = await _enqueue_analysis_after_delivery(outcome, enqueue_analysis)
+    if analysis_patch:
+        await queue.record_result(
+            job.id,
+            {"collection": outcome.record.as_mapping(), **analysis_patch},
+        )
     _discard_scratch(outcome, scratch_dir)
     if outcome.status in (AttemptStatus.FAILED, AttemptStatus.TIMED_OUT):
         raise CollectionJobFailed(outcome.failure or f"采集任务未成功（{outcome.status}）")
@@ -131,6 +140,61 @@ async def run_collection_job(
         outcome.attempt.attempt,
     )
     return outcome
+
+
+async def _enqueue_analysis_after_delivery(
+    outcome: CollectionOutcome,
+    enqueue: Callable[[dict[str, Any]], Awaitable[Any]] | None,
+) -> dict[str, Any]:
+    """采集成功导入后入队一次分析任务，与 ``POST /api/imports`` 导入后的行为一致。
+
+    只在本次确实导入了数据时入队：``imported`` 是首次导入成功，``already_imported`` 表示这次
+    重试没有重新导入。两种状态都可能缺少分析任务（例如上一次导入后 Worker 退出），所以都尝试
+    入队；真正的去重由调用方按 ``collection_id`` 检查已有任务完成。
+
+    入队失败只记录到任务结果里，不把已经成功的采集判成失败：数据已经在库里，标成失败会触发
+    重跑采集，代价远大于补一条分析任务。
+    """
+    if enqueue is None:
+        return {}
+    delivery = outcome.attempt.data.get("delivery")
+    if not isinstance(delivery, Mapping):
+        return {}
+    if delivery.get("status") not in ("imported", "already_imported"):
+        return {}
+    collection_id = delivery.get("collection_id")
+    if not isinstance(collection_id, str) or not collection_id:
+        return {}
+    system = outcome.attempt.data.get("system_info")
+    system = system if isinstance(system, Mapping) else {}
+    hostname = _optional_text(system.get("hostname"))
+    boot_raw = _optional_text(system.get("boot_id"))
+    if hostname is None or boot_raw is None:
+        return {"analysis_enqueue_error": "采集记录里缺少 hostname 或 boot_id，无法确定分析范围"}
+    try:
+        boot_id = normalize_boot_id(boot_raw)
+    except ValueError as error:
+        return {"analysis_enqueue_error": f"boot_id 不合法：{error}"}
+    payload = {
+        "machine_id": hostname if hostname.startswith("machine:") else f"machine:{hostname}",
+        "boot_id": boot_id,
+        "collection_id": collection_id,
+    }
+    try:
+        job_id = await enqueue(payload)
+    except Exception as error:
+        logger.exception("采集导入完成后没能入队分析任务")
+        return {"analysis_enqueue_error": f"{type(error).__name__}: {error}"}
+    if job_id is None:
+        return {}
+    return {"analysis_job_id": str(job_id)}
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text_value = str(value).strip()
+    return text_value or None
 
 
 def _run_id(raw: str | None, job_id: UUID) -> str:
@@ -254,8 +318,43 @@ def collection_handlers(
                     queue=queue,
                     scratch_root=resolved_scratch_root,
                     cancelled=partial(job_cancel_requested, engine, job.id),
+                    enqueue_analysis=partial(enqueue_analysis_job_once, engine, queue),
                 )
         finally:
             await engine.dispose()
 
     return {COLLECTION_JOB_KIND: handle_collect}
+
+
+async def enqueue_analysis_job_once(
+    engine: AsyncEngine,
+    queue: JobQueue,
+    payload: dict[str, Any],
+) -> UUID | None:
+    """按 ``collection_id`` 去重后入队分析任务，返回已有或新建的任务 id。
+
+    采集重试可能在导入成功之后再次走到这里。分析任务本身有重试机制，重复入队只会让同一份
+    数据被分析多次；这里先查同一个采集是否已经排过分析任务，有就复用它的 id。
+    """
+    collection_id = payload.get("collection_id")
+    if not isinstance(collection_id, str) or not collection_id:
+        raise ValueError("分析任务 payload 缺少 collection_id")
+    async with engine.begin() as conn:
+        existing = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT id
+                      FROM jobs
+                     WHERE kind = :kind
+                       AND payload ->> 'collection_id' = :collection_id
+                     ORDER BY created_at
+                     LIMIT 1
+                    """
+                ),
+                {"kind": ANALYSIS_JOB_KIND, "collection_id": collection_id},
+            )
+        ).scalar_one_or_none()
+    if existing is not None:
+        return UUID(str(existing))
+    return await queue.enqueue(ANALYSIS_JOB_KIND, payload)

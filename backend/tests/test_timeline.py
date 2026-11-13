@@ -245,6 +245,8 @@ class FakeReader:
     records: dict[tuple[str, str], list[Record]]
     streams: dict[tuple[str, str], list[MetricStreamEntity]]
     collections: dict[tuple[str, str], list[CollectionState]] = field(default_factory=dict)
+    record_reads: int = 0
+    """``list_records_in_boot`` 的调用次数，用来验证进程内缓存没有重复读整条轴。"""
 
     async def get_boot(self, machine_id: str, boot_id: str) -> BootEntity | None:
         return self.boots.get((machine_id, boot_id))
@@ -279,6 +281,7 @@ class FakeReader:
         limit: int | None = None,
     ) -> list[Record]:
         # 只为结果正确性负责：范围筛选现在在引擎里做，将来下推给存储层也不该被这条替身拦住
+        self.record_reads += 1
         return [
             record
             for record in self.records.get((machine_id, boot_id), [])
@@ -886,3 +889,39 @@ def test_diagnostic_store_satisfies_the_reader_protocol() -> None:
     store = DiagnosticStore(create_async_engine("postgresql+asyncpg://u@127.0.0.1:1/db"))
     for method in ("get_boot", "list_collections", "list_records_in_boot", "list_metric_streams"):
         assert callable(getattr(store, method, None)), method
+
+
+async def test_tracks_can_omit_event_and_span_attributes() -> None:
+    """界面用不到 attributes 时可以只要定位与展示字段，避免 Journal 原始字段撑大响应。"""
+    event = _event(1, 1 * S)
+    event.payload["attributes"] = {"unit": "nginx.service", "fields": {"_PID": "42"}}
+    span = _span(2, 2 * S, end=3 * S)
+    span.payload["attributes"] = {"invocation_id": "abc", "fields": {"_PID": "42"}}
+    engine = _engine(_reader([event, span]))
+
+    with_attributes = await engine.tracks(MACHINE, BOOT_A)
+    assert any(item.attributes for item in with_attributes.items if isinstance(item, TimelineEvent))
+    assert any(item.attributes for item in with_attributes.items if isinstance(item, TimelineSpan))
+
+    without_attributes = await engine.tracks(MACHINE, BOOT_A, include_attributes=False)
+    events = [item for item in without_attributes.items if isinstance(item, TimelineEvent)]
+    spans = [item for item in without_attributes.items if isinstance(item, TimelineSpan)]
+    assert events and all(item.attributes == {} for item in events)
+    assert spans and all(item.attributes == {} for item in spans)
+    # 同一批条目的定位字段不变，去掉的只有 attributes。
+    assert [item.record_id for item in without_attributes.items] == [
+        item.record_id for item in with_attributes.items
+    ]
+
+
+async def test_axis_is_read_once_for_repeated_queries() -> None:
+    """游标、轨道与状态查询共用同一次读出的轴，回放时不再反复搬整次启动的记录。"""
+    reader = _reader([_event(1, 1 * S), _point(2, 2 * S)])
+    engine = _engine(reader)
+
+    await engine.cursor(MACHINE, BOOT_A)
+    reads_after_cursor = reader.record_reads
+    await engine.tracks(MACHINE, BOOT_A, start_ns=1 * S, end_ns=2 * S)
+    await engine.state_at(MACHINE, BOOT_A, 1 * S)
+
+    assert reader.record_reads == reads_after_cursor

@@ -256,6 +256,7 @@ class _DeliveryClient:
         Path(local_path).write_bytes(payload)  # noqa: ASYNC240  测试假实现
 
     async def upload(self, local_path: Path | str, remote_path: str) -> None:
+        self._events.append("upload")
         self._storage[remote_path] = Path(local_path).read_bytes()  # noqa: ASYNC240
 
     async def run(
@@ -326,7 +327,37 @@ def _context(
 
 
 def _delivery_options(**extra: object) -> dict:
-    return {"delivery": {"remote_path": REMOTE_PACK, **extra}, "database_url": DATABASE_URL}
+    """远端文件已经放好的场景：显式关闭上传，只验证下载、导入与清理。"""
+    return {
+        "delivery": {"remote_path": REMOTE_PACK, "stage_local_pack": False, **extra},
+        "database_url": DATABASE_URL,
+    }
+
+
+async def test_delivery_uploads_local_pack_before_download_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """只给 remote_path 时先上传本地产出的包，不能去下载一个从未上传的文件。"""
+    storage: dict[str, bytes] = {}
+    events: list[str] = []
+    connector = _DeliveryConnector(storage, events, fail_download=False)
+
+    async def fake_source(_ctx):
+        return _packaging_source()
+
+    monkeypatch.setattr(delivery, "_load_source", fake_source)
+    monkeypatch.setattr(delivery, "import_bootrec_file", lambda _path, _url: _import_outcome())
+
+    ctx = _context(
+        tmp_path,
+        connector,
+        options={"delivery": {"remote_path": REMOTE_PACK}, "database_url": DATABASE_URL},
+    )
+    report = await delivery.deliver_from_context(ctx)
+
+    assert report is not None and report.status == "imported"
+    assert events[:2] == ["upload", "download"]
+    assert report.transfer is not None and report.transfer["succeeded"] is True
 
 
 async def test_deliver_from_context_imports_then_removes_remote(
@@ -402,6 +433,92 @@ def _patch_imported_store(monkeypatch: pytest.MonkeyPatch) -> None:
     state = _imported_state()
     monkeypatch.setattr(delivery, "create_storage_engine", lambda _url: _FakeEngine())
     monkeypatch.setattr(delivery, "DiagnosticStore", lambda _engine: _ImportedStore(state))
+
+
+class _EmptyStore:
+    """新建的采集还没有存储记录；``_load_source`` 只应查一次 ``get_collection``。"""
+
+    async def get_collection(self, collection_id: str) -> None:
+        return None
+
+
+def _patch_empty_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(delivery, "create_storage_engine", lambda _url: _FakeEngine())
+    monkeypatch.setattr(delivery, "DiagnosticStore", lambda _engine: _EmptyStore())
+
+
+def _sampling_row() -> dict:
+    body = {
+        "kind": "metric",
+        "machine_id": MACHINE_ID,
+        "boot_id": BOOT_ID,
+        "collection_id": COLLECTION_ID,
+        "source_plugin": "resource-sampler",
+        "stream_id": "cpu.total",
+        "monotonic_ns": 2_000_000_000,
+        "realtime_ns": CREATED_NS,
+        "clock_domain": "boot_monotonic",
+        "entity": "metric:cpu.total.utilization",
+        "payload": {"name": "cpu.total.utilization", "unit": "percent", "value": 12.5},
+    }
+    return {"record_id": compute_record_id(body), **body}
+
+
+def _source_context(tmp_path: Path, *, records_file: str | None) -> PhaseContext:
+    ctx = _context(
+        tmp_path,
+        _DeliveryConnector({}, [], fail_download=False),
+        options={
+            "delivery": {},
+            "collection_id": COLLECTION_ID,
+            "database_url": DATABASE_URL,
+        },
+    )
+    ctx.data["system_info"] = {
+        "hostname": "uos-152",
+        "boot_id": BOOT_ID,
+        "kernel_version": "6.1.0",
+    }
+    if records_file is not None:
+        ctx.data["sampling"] = {"records_file": records_file}
+    return ctx
+
+
+async def test_load_source_includes_records_captured_by_sampling(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_empty_store(monkeypatch)
+    records_file = tmp_path / "sampling-records.jsonl"
+    records_file.write_text(json.dumps(_sampling_row()) + "\n", encoding="utf-8")
+    ctx = _source_context(tmp_path, records_file=str(records_file))
+
+    source = await delivery._load_source(ctx)
+
+    assert isinstance(source, PackagingInput)
+    assert source.collection.collection_id == COLLECTION_ID
+    assert source.collection.machine_id == MACHINE_ID
+    assert source.collection.boot_id == BOOT_ID
+    assert len(source.records) == 1
+    assert source.records[0]["record_id"] == _sampling_row()["record_id"]
+
+
+async def test_load_source_rejects_a_missing_sampling_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_empty_store(monkeypatch)
+    ctx = _source_context(tmp_path, records_file=str(tmp_path / "missing.jsonl"))
+
+    with pytest.raises(delivery.DeliveryError, match="采样记录文件不存在"):
+        await delivery._load_source(ctx)
+
+
+async def test_load_source_without_sampling_still_returns_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_empty_store(monkeypatch)
+    ctx = _source_context(tmp_path, records_file=None)
+
+    assert await delivery._load_source(ctx) is None
 
 
 async def test_already_imported_collection_cleans_remote_without_repacking(
@@ -619,3 +736,55 @@ def test_journal_artifacts_reject_configured_missing_file(tmp_path: Path) -> Non
 
     with pytest.raises(delivery.DeliveryError, match="Journal 导出文件不存在"):
         delivery.resolve_journal_artifacts(ctx)
+
+
+def _artifact_options(source: str) -> dict:
+    return {"artifacts": [{"source": source, "path": "artifacts/collector.log"}]}
+
+
+def test_extra_artifacts_accepts_absolute_sources_inside_the_scratch_dir(
+    tmp_path: Path,
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    source = scratch / "collector.log"
+    source.write_text("log", encoding="utf-8")
+
+    artifacts = delivery._extra_artifacts(_artifact_options(str(source)), scratch_dir=scratch)
+
+    assert [artifact.source for artifact in artifacts] == [source.resolve()]
+
+
+def test_extra_artifacts_resolves_relative_sources_against_the_scratch_dir(
+    tmp_path: Path,
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    source = scratch / "collector.log"
+    source.write_text("log", encoding="utf-8")
+
+    artifacts = delivery._extra_artifacts(_artifact_options("collector.log"), scratch_dir=scratch)
+
+    assert [artifact.source for artifact in artifacts] == [source.resolve()]
+
+
+@pytest.mark.parametrize("source", ["../outside.log", "/etc/hostname"])
+def test_extra_artifacts_rejects_sources_outside_the_scratch_dir(
+    tmp_path: Path, source: str
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    with pytest.raises(delivery.DeliveryError, match="必须位于本次采集的临时目录"):
+        delivery._extra_artifacts(_artifact_options(source), scratch_dir=scratch)
+
+
+def test_extra_artifacts_rejects_a_symlink_escaping_the_scratch_dir(tmp_path: Path) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    outside = tmp_path / "outside.log"
+    outside.write_text("secret", encoding="utf-8")
+    (scratch / "link.log").symlink_to(outside)
+
+    with pytest.raises(delivery.DeliveryError, match="必须位于本次采集的临时目录"):
+        delivery._extra_artifacts(_artifact_options("link.log"), scratch_dir=scratch)
