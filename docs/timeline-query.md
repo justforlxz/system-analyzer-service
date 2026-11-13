@@ -83,6 +83,11 @@
 | `TimelineSpan` | `span_type`、`state`、`end_monotonic_ns`、`end_realtime_ns`、`end_is_declared`、`closed_by`、`attributes` |
 | `MetricPoint` | `name`、`value`、`unit` |
 
+`tracks` 还接受可选参数 `include_attributes`（默认 `true`）。传 `false` 时，事件与区间的
+`attributes` 返回空对象，`record_id`、时刻、实体、事件类型、消息等定位与展示字段不变。界面
+不使用 `attributes`，而 Journal 事件会带上整份原始字段；真实采集下关闭它可以避免响应体随
+日志条数膨胀到数百兆。`state` 与 `cursor` 不受该参数影响。
+
 `TimelineSpan` 的结束字段：
 
 - `end_is_declared` 为真：记录自己声明了结束（`end_monotonic_ns` 或 `end_realtime_ns` 至少一个非空）。
@@ -127,6 +132,8 @@
   「整个 boot 的这个流」这一粒度，不能按采集或按窗口细分。
 - 实体 `available = true` 却一个采样点都没有时，读侧只能报 `no_data`，无法区分「采集声明可用但
   采集失败」与「声明可用且确实没有采样」。
+- 仓库样例 `docs/samples/bootrec-v1/no-data.bootrec` 可以复现 `no_data`：`metric:load.1min`
+  声明可用但没有任何采样点。导入后查询时间线应看到这条轨道 `status = "no_data"`。
 - 整次启动没有资源数据时（Journal-only 导入），`metric_stream` 实体根本不存在，因此**不会**出现
   资源轨道。这件事通过结果里的 `resources` 字段表达：`available = false`、`reasons` 里是各次采集
   给出的原因（例如「本次导入不含资源数据」）。这与「某条指标流不可用」是两件事
@@ -250,12 +257,11 @@ collection 的锚点自己算（`docs/time-base.md` 第 7.1 节：墙钟换算�
    只有微秒精度。因此本任务只返回 boot 级锚点与漂移，不返回逐条记录的量化误差；换算留给 4.2，
    由它按 collection 的锚点计算。
 3. **时间范围筛在引擎里做，不下推给 SQL**：开放区间的收尾要求看到整次采集的记录（第 5 节），而
-   `DiagnosticStore` 的现有接口没有「按采集取窗口终点」的聚合方法，本任务又不允许改存储层。因此引擎
-   读整次启动的记录在内存里筛窗口。`DiagnosticStore` 已经有范围筛选能力，后续若在存储侧补一个窗口
-   聚合，可以改为下推而不影响本接口。
-   同一原因导致每次调用都重新读整次启动的记录：回放每帧调一次 `state_at`，开销按「帧数 × 记录数」
-   增长。按启动缓存留到 1.6 定接口时一起决定——缓存需要失效钩子，导入完成后数据会变，现在加一层
-   进程内缓存没有可靠的失效点。
+   `DiagnosticStore` 的现有接口没有「按采集取窗口终点」的聚合方法。因此引擎读整次启动的记录在
+   内存里筛窗口。
+   同一次启动的轴现在按 `(machine_id, boot_id)` 做短时间进程内缓存（默认 10 秒）：回放每帧调一次
+   `state_at`、窗口变化反复调 `tracks` 时，不再重复读整次启动的记录。缓存没有跨进程失效通知，
+   导入完成后的最坏情况是十秒内仍读到上一次的轴，刷新页面即可恢复。
 4. **本任务不产出 Profile、Annotation、Artifact 轨道**：它们的展示属于 2.x 与 4.x，`kinds` 传入这三类
    会报错，不会静默丢弃。
 5. **只做了单启动视图**：跨启动对比按 `docs/time-base.md` 第 3.2 节应当「各分一组并排」，本任务只保证

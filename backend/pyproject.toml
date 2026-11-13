@@ -71,4 +71,6 @@ asyncio_default_fixture_loop_scope = "function"
 addopts = ["-m", "not integration", "--strict-markers"]
 markers = [
     "integration: 需要真实 PostgreSQL 的集成测试，默认不执行，用 pytest -m integration 单独运行",
+    "acceptance: 验收用例，覆盖 issue 验收标准里的用户可见链路；多数同时带 integration",
+    "real_machine: 需要验证机的用例，默认不执行，凭据通过环境变量提供",
 ]

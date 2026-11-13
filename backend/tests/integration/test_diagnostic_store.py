@@ -29,6 +29,7 @@ from system_analyzer.domain.bootrec import (
     compute_record_id,
 )
 from system_analyzer.storage import (
+    INTERNAL_IMPORT_FAILURE_MESSAGE,
     Base,
     DiagnosticStore,
     ImportStatus,
@@ -328,7 +329,8 @@ async def test_failed_write_rolls_back_entities(
     state = await store.get_collection(FULL_COLLECTION)
     assert state is not None
     assert state.import_status is ImportStatus.FAILED
-    assert state.import_error is not None and "模拟写记录时数据库出错" in state.import_error
+    assert state.import_error == INTERNAL_IMPORT_FAILURE_MESSAGE
+    assert "模拟写记录时数据库出错" not in state.import_error
 
 
 # ---------------------------------------------------------------------------

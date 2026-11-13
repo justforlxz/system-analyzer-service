@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import system_analyzer.diagnostics.engine as diagnostics_engine
 from system_analyzer.diagnostics import (
     DiagnosticsBootNotFoundError,
     DiagnosticsServiceNotFoundError,
@@ -52,8 +54,16 @@ class FakeReader:
             return None
         return BootEntity(entity_type="boot", boot_id=boot_id, machine_id=machine_id)
 
-    async def list_records_in_boot(self, machine_id: str, boot_id: str) -> list[Record]:
-        return list(self.records)
+    async def list_records_in_boot(
+        self,
+        machine_id: str,
+        boot_id: str,
+        *,
+        kinds: Sequence[RecordKind] | None = None,
+    ) -> list[Record]:
+        if kinds is None:
+            return list(self.records)
+        return [record for record in self.records if record.kind in kinds]
 
     async def list_entities(self, machine_id: str, boot_id: str) -> list[Any]:
         return list(self.entities)
@@ -423,3 +433,89 @@ async def test_unknown_boot_and_service_are_reported() -> None:
     engine = ServiceDiagnosticsEngine(FakeReader([]))
     with pytest.raises(DiagnosticsServiceNotFoundError):
         await engine.service_at(MACHINE, BOOT, NGINX, at_ns=1)
+
+
+async def test_services_list_accumulates_spans_and_annotations_in_one_pass() -> None:
+    """服务列表的起止与结论数来自一次记录遍历，结果与逐服务扫描一致。"""
+    records = [
+        span(NGINX, start=1_000, end=2_000, span_type="service.active", state="inactive"),
+        span(NGINX, start=3_000, end=None, span_type="service.active", state="active"),
+        span(FIREFOX, start=500, end=900, span_type="service.active", state="inactive"),
+        annotation(
+            monotonic_ns=2_500,
+            annotation_type="oom.kernel.killed_process",
+            entity=NGINX,
+            message="被 OOM 杀死",
+            confidence=1.0,
+            evidence_refs=[],
+        ),
+        annotation(
+            monotonic_ns=2_600,
+            annotation_type="systemd.lifecycle",
+            entity=NGINX,
+            message="启动失败",
+            confidence=0.8,
+            evidence_refs=[],
+        ),
+    ]
+    entities = [
+        service_entity(NGINX, "nginx.service"),
+        service_entity(FIREFOX, "firefox.service"),
+        service_entity("service:quiet.service", "quiet.service"),
+    ]
+    result = await ServiceDiagnosticsEngine(FakeReader(records, entities)).services(MACHINE, BOOT)
+
+    summaries = {item.entity: item for item in result.services}
+    assert [item.entity for item in result.services] == [
+        FIREFOX,
+        NGINX,
+        "service:quiet.service",
+    ]
+    assert summaries[NGINX].lifecycle_start_ns == 1_000
+    assert summaries[NGINX].lifecycle_end_ns == 2_000
+    assert summaries[NGINX].annotation_count == 2
+    assert summaries[FIREFOX].lifecycle_start_ns == 500
+    assert summaries[FIREFOX].lifecycle_end_ns == 900
+    assert summaries["service:quiet.service"].lifecycle_start_ns is None
+
+
+async def test_services_aggregation_runs_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """服务列表的汇总放到工作线程，请求处理期间事件循环可以继续响应其他请求。"""
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+    original = diagnostics_engine._summarize_services
+
+    def wrapping(records: Sequence[Record], entities: Sequence[Any]) -> Any:
+        seen.append(threading.get_ident())
+        return original(records, entities)
+
+    monkeypatch.setattr(diagnostics_engine, "_summarize_services", wrapping)
+    await ServiceDiagnosticsEngine(FakeReader([])).services(MACHINE, BOOT)
+
+    assert seen
+    assert seen[0] != loop_thread
+
+
+async def test_service_diagnostics_build_runs_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """单个服务的状态重建同样放到工作线程，避免长请求占满事件循环。"""
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+    original = diagnostics_engine._service_diagnostics
+
+    def wrapping(*args: Any, **kwargs: Any) -> Any:
+        seen.append(threading.get_ident())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(diagnostics_engine, "_service_diagnostics", wrapping)
+    reader = FakeReader(
+        [span(NGINX, start=1_000, end=2_000, span_type="service.active", state="inactive")],
+        [service_entity(NGINX, "nginx.service")],
+    )
+    await ServiceDiagnosticsEngine(reader).service_at(MACHINE, BOOT, NGINX, at_ns=1_500)
+
+    assert seen
+    assert seen[0] != loop_thread

@@ -177,7 +177,6 @@ def detect_kill(record: Record) -> OomKill | None:
         return None
 
     kernel = _KERNEL_KILL.search(message)
-    kernel = _KERNEL_KILL.search(message)
     if kernel is not None:
         # 只有内核自己写的记录才可能是「内核 OOM 事实」。转发或监控服务（自检报告、容器运行时、
         # 诊断工具）会把 dmesg 原文打进自己的日志，来源字段是 journal / syslog / stdout，

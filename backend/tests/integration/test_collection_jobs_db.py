@@ -27,6 +27,7 @@ from system_analyzer.collection.environment import ENVIRONMENT_COMMAND
 from system_analyzer.collection.jobs import (
     COLLECTION_JOB_KIND,
     collection_handlers,
+    enqueue_analysis_job_once,
     job_cancel_requested,
 )
 from system_analyzer.collection.record import CollectionRecord
@@ -405,3 +406,29 @@ async def test_privileged_install_is_used_for_files_under_etc(
     assert privileged.count("systemctl daemon-reload") == 2
     # 直接上传的目标全是暂存目录里的文件，没有一个 /etc 路径
     assert all(path.startswith("/var/tmp/") for path in connector.uploads_of(TARGET))
+
+
+async def test_analysis_job_is_enqueued_once_per_collection(
+    engine: AsyncEngine, queue: JobQueue
+) -> None:
+    """采集重试重复走到入队时，同一个 collection_id 只保留一个分析任务。"""
+    payload = {
+        "machine_id": f"machine:{TARGET}",
+        "boot_id": "abc7451f-65c8-4be8-ab01-4b9a1e49a8b9",
+        "collection_id": "collection:one",
+    }
+
+    first = await enqueue_analysis_job_once(engine, queue, payload)
+    second = await enqueue_analysis_job_once(engine, queue, payload)
+
+    assert first is not None and first == second
+    async with engine.begin() as conn:
+        count = (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM jobs WHERE kind = 'analysis.run'"
+                    " AND payload ->> 'collection_id' = 'collection:one'"
+                )
+            )
+        ).scalar_one()
+    assert count == 1

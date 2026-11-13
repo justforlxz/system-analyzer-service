@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
 
@@ -56,7 +57,13 @@ class DiagnosticsReader(Protocol):
 
     async def get_boot(self, machine_id: str, boot_id: str) -> BootEntity | None: ...
 
-    async def list_records_in_boot(self, machine_id: str, boot_id: str) -> Sequence[Record]: ...
+    async def list_records_in_boot(
+        self,
+        machine_id: str,
+        boot_id: str,
+        *,
+        kinds: Sequence[RecordKind] | None = None,
+    ) -> Sequence[Record]: ...
 
     async def list_entities(self, machine_id: str, boot_id: str) -> Sequence[Any]: ...
 
@@ -68,23 +75,29 @@ class ServiceDiagnosticsEngine:
         self._reader = reader
 
     async def services(self, machine_id: str, boot_id: str) -> ServiceList:
-        """这次启动里能被诊断的服务，来自实体表与记录上的 ``service:`` 实体。"""
+        """这次启动里能被诊断的服务。
+
+        来源是实体表里的 service 实体，加上区间与结论记录上出现的 ``service:`` 实体。事件记录
+        不参与：按数据契约，记录引用的实体必须已经写入实体表。
+        """
         await self._require_boot(machine_id, boot_id)
-        records = list(await self._reader.list_records_in_boot(machine_id, boot_id))
+        # 服务列表只用到区间与结论，不读事件与采样点。真实采集里事件占九成以上，整表读出来
+        # 既慢又会在行转对象的阶段占住事件循环。
+        records = list(
+            await self._reader.list_records_in_boot(
+                machine_id,
+                boot_id,
+                kinds=(RecordKind.SPAN, RecordKind.ANNOTATION),
+            )
+        )
         entities = list(await self._reader.list_entities(machine_id, boot_id))
-        services: dict[str, ServiceSummary] = {}
-        for entity in entities:
-            entity_id = getattr(entity, "entity_id", None)
-            if getattr(entity, "entity_type", None) != "service" or not entity_id:
-                continue
-            services[entity_id] = _summary(entity_id, records)
-        for record in records:
-            if record.entity and record.entity.startswith(SERVICE_PREFIX):
-                services.setdefault(record.entity, _summary(record.entity, records))
+        # 汇总要遍历数万条记录，是纯计算。放到工作线程执行，避免一次诊断请求把 API 的
+        # 事件循环占满，导致同一时刻的健康检查、任务查询等请求都没有响应。
+        services = await asyncio.to_thread(_summarize_services, records, entities)
         return ServiceList(
             machine_id=machine_id,
             boot_id=boot_id,
-            services=tuple(sorted(services.values(), key=lambda item: item.entity)),
+            services=services,
         )
 
     async def service_at(
@@ -104,52 +117,15 @@ class ServiceDiagnosticsEngine:
             )
         records = list(await self._reader.list_records_in_boot(machine_id, boot_id))
         entities = list(await self._reader.list_entities(machine_id, boot_id))
-        moment = _default_at(records) if at_ns is None else at_ns
-        unit = entity_id[len(SERVICE_PREFIX) :]
-        if not _exists(entity_id, records, entities):
-            raise DiagnosticsServiceNotFoundError(f"启动 {machine_id}/{boot_id} 里没有服务 {unit}")
-
-        service_events = [
-            record
-            for record in records
-            if record.kind is RecordKind.EVENT and _belongs(record, unit)
-        ]
-        service_event_ids = {record.record_id for record in service_events}
-        spans = sorted(
-            (
-                record
-                for record in records
-                if record.kind is RecordKind.SPAN and record.entity == entity_id
-            ),
-            key=_record_order,
-        )
-        annotations = [
-            record
-            for record in records
-            if record.kind is RecordKind.ANNOTATION
-            and _annotation_relevant(record, entity_id, service_event_ids)
-        ]
-        lifecycle = tuple(_span_view(record) for record in spans)
-        state = _state_at(spans, moment, _data_end(records))
-        identity = _identity_at(spans, service_events, unit, moment)
-        annotation_views = tuple(_annotation_view(record, records) for record in annotations)
-        journal = _journal(service_events, records, annotations, moment, journal_window_ns)
-        resources = _resources(records, entities, unit, identity, moment, journal_window_ns)
-
-        uncertain = _uncertainties(state, identity, resources, annotation_views)
-        return ServiceDiagnostics(
-            machine_id=machine_id,
-            boot_id=boot_id,
-            entity=entity_id,
-            unit=unit,
-            at_ns=moment,
-            state=state,
-            identity=identity,
-            lifecycle=lifecycle,
-            journal=journal,
-            resources=resources,
-            annotations=annotation_views,
-            uncertain=uncertain,
+        return await asyncio.to_thread(
+            _service_diagnostics,
+            machine_id,
+            boot_id,
+            entity_id,
+            records,
+            entities,
+            at_ns,
+            journal_window_ns,
         )
 
     async def _require_boot(self, machine_id: str, boot_id: str) -> None:
@@ -157,30 +133,113 @@ class ServiceDiagnosticsEngine:
             raise DiagnosticsBootNotFoundError(f"启动 {machine_id}/{boot_id} 不在库里")
 
 
-def _summary(entity_id: str, records: Sequence[Record]) -> ServiceSummary:
-    spans = [
+def _service_diagnostics(
+    machine_id: str,
+    boot_id: str,
+    entity_id: str,
+    records: Sequence[Record],
+    entities: Sequence[Any],
+    at_ns: int | None,
+    journal_window_ns: int,
+) -> ServiceDiagnostics:
+    """``service_at`` 的纯计算部分：在 Worker 线程里重建状态与证据。"""
+    moment = _default_at(records) if at_ns is None else at_ns
+    unit = entity_id[len(SERVICE_PREFIX) :]
+    if not _exists(entity_id, records, entities):
+        raise DiagnosticsServiceNotFoundError(f"启动 {machine_id}/{boot_id} 里没有服务 {unit}")
+
+    service_events = [
+        record for record in records if record.kind is RecordKind.EVENT and _belongs(record, unit)
+    ]
+    service_event_ids = {record.record_id for record in service_events}
+    spans = sorted(
+        (
+            record
+            for record in records
+            if record.kind is RecordKind.SPAN and record.entity == entity_id
+        ),
+        key=_record_order,
+    )
+    annotations = [
         record
         for record in records
-        if record.entity == entity_id and record.kind is RecordKind.SPAN
+        if record.kind is RecordKind.ANNOTATION
+        and _annotation_relevant(record, entity_id, service_event_ids)
     ]
-    starts = [record.monotonic_ns for record in spans if record.monotonic_ns is not None]
-    ends = [
-        value
-        for record in spans
-        if (value := _first_int(record.payload.get("end_monotonic_ns"))) is not None
-    ]
-    annotation_count = sum(
-        1
-        for record in records
-        if record.kind is RecordKind.ANNOTATION and record.entity == entity_id
-    )
-    return ServiceSummary(
+    lifecycle = tuple(_span_view(record) for record in spans)
+    state = _state_at(spans, moment, _data_end(records))
+    identity = _identity_at(spans, service_events, unit, moment)
+    annotation_views = tuple(_annotation_view(record, records) for record in annotations)
+    journal = _journal(service_events, records, annotations, moment, journal_window_ns)
+    resources = _resources(records, entities, unit, identity, moment, journal_window_ns)
+
+    uncertain = _uncertainties(state, identity, resources, annotation_views)
+    return ServiceDiagnostics(
+        machine_id=machine_id,
+        boot_id=boot_id,
         entity=entity_id,
-        unit=entity_id[len(SERVICE_PREFIX) :],
-        lifecycle_start_ns=min(starts, default=None),
-        lifecycle_end_ns=max(ends, default=None),
-        annotation_count=annotation_count,
+        unit=unit,
+        at_ns=moment,
+        state=state,
+        identity=identity,
+        lifecycle=lifecycle,
+        journal=journal,
+        resources=resources,
+        annotations=annotation_views,
+        uncertain=uncertain,
     )
+
+
+def _summarize_services(
+    records: Sequence[Record], entities: Sequence[Any]
+) -> tuple[ServiceSummary, ...]:
+    """一次遍历记录，按实体累计生命周期起止与结论条数。"""
+    summaries: dict[str, _ServiceAccumulator] = {}
+    for entity in entities:
+        entity_id = getattr(entity, "entity_id", None)
+        if getattr(entity, "entity_type", None) != "service" or not entity_id:
+            continue
+        summaries[entity_id] = _ServiceAccumulator()
+    for record in records:
+        entity_id = record.entity
+        if not entity_id or not entity_id.startswith(SERVICE_PREFIX):
+            continue
+        accumulator = summaries.setdefault(entity_id, _ServiceAccumulator())
+        if record.kind is RecordKind.SPAN:
+            accumulator.add_span(record)
+        elif record.kind is RecordKind.ANNOTATION:
+            accumulator.annotation_count += 1
+    return tuple(
+        accumulator.summary(entity_id) for entity_id, accumulator in sorted(summaries.items())
+    )
+
+
+class _ServiceAccumulator:
+    """一个服务在列表里的累计值：生命周期起止与结论条数。"""
+
+    def __init__(self) -> None:
+        self.lifecycle_start_ns: int | None = None
+        self.lifecycle_end_ns: int | None = None
+        self.annotation_count = 0
+
+    def add_span(self, record: Record) -> None:
+        start = record.monotonic_ns
+        if start is not None and (
+            self.lifecycle_start_ns is None or start < self.lifecycle_start_ns
+        ):
+            self.lifecycle_start_ns = start
+        end = _first_int(record.payload.get("end_monotonic_ns"))
+        if end is not None and (self.lifecycle_end_ns is None or end > self.lifecycle_end_ns):
+            self.lifecycle_end_ns = end
+
+    def summary(self, entity_id: str) -> ServiceSummary:
+        return ServiceSummary(
+            entity=entity_id,
+            unit=entity_id[len(SERVICE_PREFIX) :],
+            lifecycle_start_ns=self.lifecycle_start_ns,
+            lifecycle_end_ns=self.lifecycle_end_ns,
+            annotation_count=self.annotation_count,
+        )
 
 
 def _span_view(record: Record) -> LifecycleSpan:

@@ -33,6 +33,13 @@ async def read_tracks(
         None,
         description="逗号分隔的记录种类，只能取 event、span、metric；不传表示全部",
     ),
+    include_attributes: bool = Query(
+        True,
+        description=(
+            "是否返回事件与区间的 attributes。界面不需要它们时传 false，"
+            "可以避免把 Journal 原始字段整份放大到响应里"
+        ),
+    ),
     window: WindowParams = Depends(window_params),
     engine: TimelineEngine = Depends(get_timeline),
 ) -> TracksResponse:
@@ -43,6 +50,7 @@ async def read_tracks(
         start_ns=window.start_ns,
         end_ns=window.end_ns,
         kinds=wanted,
+        include_attributes=include_attributes,
     )
     return tracks_response(tracks)
 

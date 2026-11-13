@@ -47,6 +47,11 @@ FastAPI。
 数据请求封装在 `frontend/src/lib/api/client.ts`，类型直接来自 `src/lib/api/schema.d.ts`（由
 `npm run api:generate` 生成，未手改）。
 
+首屏不取整条轴：页面先读 `cursor` 拿到轴范围，再以轴末尾 60 秒作为初始窗口请求 `tracks`，
+并传 `include_attributes=false`。真实采集的 Journal 可能覆盖数天，整条轴会有数万条事件；
+默认窗口让首屏先落在采集窗口附近，轴范围仍完整显示，用户可以自行缩放或点「全览」。
+初始游标也放在这个窗口的起点，避免打开页面就看到「游标在窗口之外」。
+
 ## 3. 统一时间游标
 
 - 界面上只有**一条**游标线（`data-testid="shared-cursor"`），横跨所有轨道；位置由后端
@@ -76,6 +81,9 @@ FastAPI。
   轨道标签里。这样三条资源轨道与生命周期、事件轨道的绘图区宽度完全一致，共用的游标线才能一条
   直线贯穿到底。
 - 资源轨道与其它轨道共用同一个左边界（标签列固定宽度 `TRACK_LABEL_WIDTH = 240`）。
+- 每个分组默认只渲染前 20 条在当前窗口里有数据的轨道；其余轨道用「显示更多轨道（还有 N 条）」
+  展开。没有数据的可用轨道不占一行，不可用与无数据的指标流仍然显示，因为那本身就是需要如实
+  展示的状态。
 - 资源曲线的悬浮提示先把文字转义再交给 ECharts（`escapeHtml`）：单位与指标名来自导入的
   `.bootrec`，导入校验不限制字符集，而 ECharts 把 `tooltip.formatter` 的返回值按 HTML 插入。
 
@@ -109,6 +117,9 @@ FastAPI。
 
 缩放下限是 1 毫秒（`MIN_WINDOW_NS`），上限是整条轴；缩放与平移都夹在 `axis_*` 之内，界面上的
 窗口值始终是后端回显的 `window_start_ns` / `window_end_ns`。
+
+「关键事件」列表最多渲染当前窗口的前 200 条，超过时在列表末尾说明总数并提示缩小窗口查看更具体
+的事件。事件轨道本身仍按当前窗口绘制全部事件，列表上限只限制可点击的按钮数量。
 
 ## 7. 时间值的显示口径
 
@@ -161,7 +172,9 @@ cd frontend && npx playwright install chromium && npm run test:e2e
 - 端到端测试（Playwright）：`frontend/e2e/timeline.spec.ts`。E2E 不依赖真实后端：
   `e2e/mock-api/server.mjs` 用 `e2e/mock-api/fixtures/` 里从真实后端抓下来的响应起一个假 API，
   Playwright 在两份 `webServer` 配置里先起假 API、再用它作为 `NEXT_PUBLIC_API_BASE_URL` 起 Next.js。
-  fixtures 是三份样例各自**单独**导入后抓取的快照（三份样例共用同一个 `boot_id`，同时导入会合并）。
+  fixtures 是全量、Journal-only、资源缺失三份样例各自**单独**导入后抓取的快照（三份样例共用
+  同一个 `boot_id`，同时导入会合并）；第四份 `no-data.bootrec` 没有抓取 fixtures，只在导入
+  验证里使用。
 
 用真实后端复跑的步骤：
 
@@ -171,10 +184,11 @@ cd backend && cp -n .env.example .env && uv run alembic upgrade head
 SAS_API_PORT=8010 SAS_UPLOAD_DIR=var/uploads uv run sas-api      # 另一个终端
 SAS_UPLOAD_DIR=var/uploads uv run sas-worker                     # 另一个终端
 
-# 依次单独导入三份样例（每次导入前清空上一次的数据，三份样例的 boot_id 相同）
+# 依次单独导入四份样例（每次导入前清空上一次的数据，四份样例的 boot_id 相同）
 curl -s -F "file=@docs/samples/bootrec-v1/full.bootrec"             http://127.0.0.1:8010/api/imports
 curl -s -F "file=@docs/samples/bootrec-v1/journal-only.bootrec"     http://127.0.0.1:8010/api/imports
 curl -s -F "file=@docs/samples/bootrec-v1/resources-missing.bootrec" http://127.0.0.1:8010/api/imports
+curl -s -F "file=@docs/samples/bootrec-v1/no-data.bootrec"          http://127.0.0.1:8010/api/imports
 ```
 
 ```bash
@@ -198,6 +212,6 @@ cd frontend && NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8010 npm run dev
 6. **只做单启动视图**。`docs/timeline-query.md` 第 11 节第 5 条把「两次启动并排」留给后续版本，
    本任务不做。
 7. **E2E 的 fixtures 是抓取快照**，不是实时后端。其中 `boot-resources` 额外追加了一条 `no_data`
-   轨道：三份样例里没有「流声明可用但一个采样点都没有」的组合，这个状态只能由导入方造出来，
-   因此在假后端里显式补上，仅用于覆盖「无数据」的显示。
-8. **没有改 `docs/` 下已有文档，也没有改后端代码与 `schema.d.ts`**。
+   轨道：抓取 fixtures 时用的三份样例里没有「流声明可用但一个采样点都没有」的组合；现在第四份
+   样例 `docs/samples/bootrec-v1/no-data.bootrec` 可以复现这个状态，假后端仍显式补上，仅用于
+   稳定覆盖「无数据」的显示。

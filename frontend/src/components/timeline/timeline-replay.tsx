@@ -55,6 +55,8 @@ const ZOOM_IN_FACTOR = 0.5;
 const ZOOM_OUT_FACTOR = 2;
 const DRAG_THRESHOLD_PX = 3;
 const WINDOW_FETCH_DELAY_MS = 80;
+const TRACKS_PER_GROUP = 20;
+const MAX_LISTED_EVENTS = 200;
 
 const TONE_CLASS: Record<"ok" | "muted" | "warn", string> = {
   ok: "bg-slate-100 text-slate-600",
@@ -104,9 +106,16 @@ export function TimelineReplay({
   const [tracksData, setTracksData] = useState<TracksResponse>(initialTracks);
   const [cursor, setCursor] = useState<CursorResponse>(initialCursor);
   const [state, setState] = useState<TimelineStateResponse | null>(null);
-  const [range, setRange] = useState<WindowRange>(() =>
-    axis ? { startNs: axis.startNs, endNs: axis.endNs } : { startNs: 0, endNs: 0 },
-  );
+  const [range, setRange] = useState<WindowRange>(() => {
+    if (initialTracks.window_start_ns !== null && initialTracks.window_end_ns !== null) {
+      return {
+        startNs: initialTracks.window_start_ns,
+        endNs: initialTracks.window_end_ns,
+      };
+    }
+    return axis ? { startNs: axis.startNs, endNs: axis.endNs } : { startNs: 0, endNs: 0 };
+  });
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const tracksRequestRef = useRef(0);
@@ -138,6 +147,7 @@ export function TimelineReplay({
         const next = await fetchTracks(machine.machine_id, bootId, {
           startNs: target.startNs,
           endNs: target.endNs,
+          includeAttributes: false,
         });
         if (requestId !== tracksRequestRef.current) return;
         setTracksData(next);
@@ -240,6 +250,26 @@ export function TimelineReplay({
   };
 
   const groups = useMemo(() => groupTracks(tracksData.tracks), [tracksData.tracks]);
+  // 窗口里有数据才画成一行；没有数据的可用轨道在这个窗口里没有内容，不占版面。
+  // 不可用与无数据的指标流仍然保留，它们本身就是需要如实展示的状态。
+  const visibleGroups = useMemo(
+    () =>
+      groups
+        .map((group) => {
+          const tracks = group.tracks.filter(
+            (track) => track.status !== "available" || track.items.length > 0,
+          );
+          const limit = expandedGroups[group.key] ? tracks.length : TRACKS_PER_GROUP;
+          return {
+            ...group,
+            tracks: tracks.slice(0, limit),
+            hidden: Math.max(0, tracks.length - limit),
+            total: tracks.length,
+          };
+        })
+        .filter((group) => group.total > 0),
+    [expandedGroups, groups],
+  );
   const notice = resourcesNotice(tracksData.resources);
   // 游标没有位置时（这次启动没有任何可停靠的时刻）不显示上一轮的时刻状态，避免把旧读数
   // 当成当前读数。
@@ -252,6 +282,7 @@ export function TimelineReplay({
     () => tracksData.items.filter((item): item is EventItem => item.type === "event"),
     [tracksData.items],
   );
+  const listedEvents = events.slice(0, MAX_LISTED_EVENTS);
   const trackItems = useMemo(() => sliceTrackItems(tracksData.tracks), [tracksData.tracks]);
   const cursorFraction =
     cursorInside && cursorPosition !== null ? nsToFraction(cursorPosition, displayRange) : null;
@@ -447,7 +478,7 @@ export function TimelineReplay({
               />
             ) : null}
           </div>
-          {groups.map((group) => (
+          {visibleGroups.map((group) => (
             <div key={group.key}>
               <div className="flex items-baseline gap-2 border-y border-slate-100 bg-slate-50 px-3 py-1 text-xs">
                 <span className="font-medium text-slate-700">{group.title}</span>
@@ -556,6 +587,21 @@ export function TimelineReplay({
                   </div>
                 );
               })}
+              {group.hidden > 0 ? (
+                <div className="border-t border-slate-100 px-3 py-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setExpandedGroups((current) => ({ ...current, [group.key]: true }))
+                    }
+                    data-testid="show-more-tracks"
+                    data-group={group.key}
+                  >
+                    显示更多轨道（还有 {group.hidden} 条，共 {group.total} 条）
+                  </Button>
+                </div>
+              ) : null}
             </div>
           ))}
           {tracksData.wall_clock_items.length > 0 ? (
@@ -592,7 +638,7 @@ export function TimelineReplay({
             关键事件（点击定位游标）
           </h2>
           <ul className="divide-y divide-slate-100">
-            {events.map((event) => (
+            {listedEvents.map((event) => (
               <li key={`${event.collection_id}-${event.record_id}`}>
                 <button
                   type="button"
@@ -615,6 +661,12 @@ export function TimelineReplay({
               </li>
             ))}
           </ul>
+          {events.length > listedEvents.length ? (
+            <p className="border-t border-slate-100 px-3 py-2 text-xs text-slate-500">
+              当前窗口共有 {events.length} 条事件，列表只显示前 {listedEvents.length} 条；
+              缩小时间窗口可以看到更具体的事件。
+            </p>
+          ) : null}
         </section>
       ) : null}
     </section>

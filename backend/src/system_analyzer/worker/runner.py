@@ -51,9 +51,24 @@ class Worker:
         return True
 
     async def run_forever(self) -> None:
-        """循环执行任务，队列为空时按配置的间隔等待。"""
+        """循环执行任务，队列为空时按配置的间隔等待。
+
+        队列本身出错（数据库暂时不可用、连接被重置）时只记日志并等下一轮：单次抖动不能让
+        整个 Worker 进程退出——进程退出后没有任何东西会把它拉起来，采集、导入与分析任务会
+        一直积压在队列里。任务处理器内部的异常已经在 ``run_once`` 里处理，不会走到这里。
+        """
         logger.info("Worker %s 启动", self._worker_id)
         while True:
-            handled = await self.run_once()
+            try:
+                handled = await self.run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Worker %s 本轮执行失败，%.1f 秒后重试",
+                    self._worker_id,
+                    self._poll_interval,
+                )
+                handled = False
             if not handled:
                 await asyncio.sleep(self._poll_interval)

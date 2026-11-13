@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -66,12 +67,21 @@ from system_analyzer.storage.validation import (
     stored_content_problems,
 )
 
+logger = logging.getLogger(__name__)
+
 INSERT_BATCH_SIZE = 500
 """一条 ``INSERT`` 语句最多写多少行。
 
 PostgreSQL 单条语句的绑定参数上限是 65535；``records`` 每行 12 个参数、``entities`` 每行 9 个，
 一批 500 行分别只要 6000 与 4500 个参数，离上限足够远。写入仍然是同一个事务，分批只影响语句
 条数，不影响原子性。
+"""
+
+INTERNAL_IMPORT_FAILURE_MESSAGE = "导入数据写入失败，具体原因见服务端日志"
+"""写入事务内出错时写进 ``import_error`` 的说明。
+
+``import_error`` 会出现在 ``GET /api/collections`` 与采集详情里，可能被界面直接展示，
+所以只给一句可读的固定说明：异常类型、SQL 片段与文件路径只进日志。
 """
 
 
@@ -244,9 +254,10 @@ class DiagnosticStore:
                     session, [item.record for item in incoming]
                 )
                 await self._transition(session, collection.collection_id, ImportStatus.IMPORTED)
-        except Exception as error:
+        except Exception:
+            logger.exception("采集 %s 写入数据库失败", collection.collection_id)
             await self._mark_failed_quietly(
-                collection.collection_id, f"{type(error).__name__}: {error}"
+                collection.collection_id, INTERNAL_IMPORT_FAILURE_MESSAGE
             )
             raise
         return ImportOutcome(

@@ -7,6 +7,7 @@ import {
   MIN_WINDOW_NS,
   nsToFraction,
   panWindow,
+  tailWindow,
   windowAround,
   windowSpan,
   zoomWindow,
@@ -143,5 +144,18 @@ describe("windowAround", () => {
   it("靠近轴起点时贴边", () => {
     const moved = windowAround(axis.startNs, 2_000_000_000, axis);
     expect(moved).toEqual({ startNs: axis.startNs, endNs: axis.startNs + 2_000_000_000 });
+  });
+});
+
+describe("tailWindow", () => {
+  it("取轴末尾的一段窗口", () => {
+    expect(tailWindow(axis, 2_000_000_000)).toEqual({
+      startNs: axis.endNs - 2_000_000_000,
+      endNs: axis.endNs,
+    });
+  });
+
+  it("轴跨度不足时返回整条轴", () => {
+    expect(tailWindow(axis, 1e15)).toEqual(axis);
   });
 });

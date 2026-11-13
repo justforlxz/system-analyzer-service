@@ -1,6 +1,9 @@
-"""Worker 主循环测试：用假队列验证成功、失败与未知类型的处理。"""
+"""Worker 主循环测试：用假队列验证成功、失败、未知类型与队列抖动时的处理。"""
 
+import asyncio
 from uuid import UUID, uuid4
+
+import pytest
 
 from system_analyzer.jobs.models import JobStatus
 from system_analyzer.jobs.queue import Job
@@ -72,6 +75,39 @@ async def test_empty_queue_returns_false() -> None:
     worker = Worker(FakeQueue([]), {}, worker_id="worker-test")
 
     assert await worker.run_once() is False
+
+
+async def test_run_forever_survives_a_queue_error() -> None:
+    """数据库短暂不可用时主循环只重试，不退出。"""
+
+    class FlakyQueue(FakeQueue):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.claims = 0
+            self.failures = 0
+
+        async def claim(self, worker_id: str) -> Job | None:
+            self.claims += 1
+            if self.claims == 1:
+                self.failures += 1
+                raise ConnectionError("数据库连接被重置")
+            return None
+
+    queue = FlakyQueue()
+    worker = Worker(queue, {}, worker_id="worker-test", poll_interval_seconds=0)
+    running = asyncio.create_task(worker.run_forever())
+    try:
+        for _ in range(200):
+            if queue.claims >= 3:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+
+    assert queue.failures == 1
+    assert queue.claims >= 3
 
 
 def test_main_unloads_plugins_when_the_process_exits(

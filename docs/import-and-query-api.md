@@ -161,6 +161,8 @@ $ curl -s "$API/api/machines/machine:uos-PC/boots/nope/timeline/tracks"
 三个接口全部直接调用任务 1.5 的 `TimelineEngine`，本层只做参数校验与序列化：
 
 - `tracks`：一次启动在给定范围里的轨道与条目，附整条轴的范围、启动锚点与漂移、整次启动的资源声明。
+  可选参数 `include_attributes=false` 让事件与区间只返回空 `attributes`，界面用它避免把 Journal
+  原始字段整份搬进浏览器；默认 `true`，保持既有响应形状。
 - `state`：某个 boot 内时刻每条轨道的状态（最近采样点、正在进行的区间、最近事件）。
 - `cursor`：统一时间游标。带 `forward=true|false` 时先把游标放到 `at_ns`（缺省为轴起点），再挪到
   后一个或前一个可停靠时刻。

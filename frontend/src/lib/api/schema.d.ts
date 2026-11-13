@@ -549,6 +549,13 @@ export interface components {
          */
         CollectionTaskRequest: {
             /**
+             * Options
+             * @description 采集选项，只接受下列字段，其余键会被忽略：``backup_paths``（要备份并恢复的远端文件）、``desktop_user`` / ``desktop_login_timeout``（LightDM 自动登录）、``phase_timeouts``（各阶段时间上限）、``delivery``（打包回传与导入的开关与远端路径，只接受 ``remote_path``、``stage_local_pack``、``retry_delay_seconds``、``download_attempts``；给了 ``remote_path`` 时默认先上传本地产出的包，显式传 ``stage_local_pack=false`` 才表示远端已经有包、只做下载）
+             */
+            options?: {
+                [key: string]: unknown;
+            };
+            /**
              * Run Id
              * @description 采集任务 id，必须是 UUID；不传时由服务端生成
              */
@@ -1936,6 +1943,8 @@ export interface operations {
             query?: {
                 /** @description 逗号分隔的记录种类，只能取 event、span、metric；不传表示全部 */
                 kinds?: string | null;
+                /** @description 是否返回事件与区间的 attributes。界面不需要它们时传 false，可以避免把 Journal 原始字段整份放大到响应里 */
+                include_attributes?: boolean;
                 /** @description 起始时刻（含），单位纳秒 */
                 start_ns?: number | null;
                 /** @description 结束时刻（含），单位纳秒 */

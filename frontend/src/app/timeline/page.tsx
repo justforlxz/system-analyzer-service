@@ -10,6 +10,7 @@ import {
   fetchTracks,
   type CollectionResponse,
 } from "@/lib/api/client";
+import { tailWindow } from "@/lib/timeline/scale";
 
 export const dynamic = "force-dynamic";
 
@@ -81,12 +82,28 @@ type BootData =
 
 async function loadBoot(machineId: string, bootId: string): Promise<BootData> {
   try {
-    const [machine, tracks, cursor] = await Promise.all([
+    // 先取游标拿轴范围，再只取末尾 60 秒的轨道。真实采集的 Journal 可能覆盖数天，
+    // 一次取整条轴会把数十万条记录搬进浏览器；轴范围仍然完整显示，用户可以自行缩放。
+    const [machine, cursor] = await Promise.all([
       fetchMachine(machineId),
-      fetchTracks(machineId, bootId),
       fetchCursor(machineId, bootId),
     ]);
-    return { ok: true, machine, tracks, cursor };
+    const axis =
+      cursor.start_ns !== null && cursor.end_ns !== null
+        ? { startNs: cursor.start_ns, endNs: cursor.end_ns }
+        : null;
+    const window = axis === null ? null : tailWindow(axis);
+    const [tracks, initialCursor] = await Promise.all([
+      fetchTracks(machineId, bootId, {
+        startNs: window?.startNs,
+        endNs: window?.endNs,
+        includeAttributes: false,
+      }),
+      window === null
+        ? Promise.resolve(cursor)
+        : fetchCursor(machineId, bootId, { atNs: window.startNs }),
+    ]);
+    return { ok: true, machine, tracks, cursor: initialCursor };
   } catch (error) {
     return { ok: false, message: describeError(error) };
   }
