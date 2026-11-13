@@ -6,7 +6,10 @@ Journal 原始导出文件与 3.5 的实体清单如果已经留在本次尝试�
 顺序固定为「打包 → 回传（可选）→ 导入 → 清理远端」：
 
 - 打包和导入都失败时，本地包与远端文件都保留；重试会重新打包并重新下载。
-- 远端文件只在 1.3 导入返回成功后删除；导入失败时远端不动。
+- 该采集此前已经导入成功时不再重新打包：原始文件可能只存在于上一次的临时目录里，
+  重试直接清理远端并返回「已导入」结果（``status = already_imported``）。
+- 远端文件只在 1.3 导入返回成功后删除；导入失败时远端不动。清理没有确认成功时，
+  远端文件保留，并在结果的 ``warnings`` 里写明原因。
 - 本模块不执行环境恢复。环境恢复由 ``collection.plan`` 的 Post 步骤负责；调用方在回传
   失败时也要确保那一步仍然执行（见 ``plan.gather_collected_data``）。
 """
@@ -56,7 +59,7 @@ from system_analyzer.domain.bootrec import (
     Record,
 )
 from system_analyzer.remote.errors import RemoteError
-from system_analyzer.storage import DiagnosticStore
+from system_analyzer.storage import CollectionState, DiagnosticStore, ImportStatus
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +72,26 @@ DATABASE_URL_OPTION = "database_url"
 JOURNAL_WORK_DIR_OPTION = "journal_work_dir"
 
 NO_JOURNAL_WARNING = "没有找到 3.5 的 Journal 导出文件，包内 journal.jsonl 为 0 行"
+ALREADY_IMPORTED_WARNING = "这次采集此前已经导入成功，本次只做远端清理，没有重新打包"
+REMOTE_CLEANUP_FAILED_WARNING = (
+    "远端文件清理没有确认成功（SSH 连接失败或 rm 返回非零），文件保留在 {path}"
+)
 
 
 class DeliveryError(RuntimeError):
     """打包、回传或导入没有成功。远端数据在导入成功前不会被删除。"""
+
+
+@dataclass(frozen=True, slots=True)
+class ImportedCollection:
+    """已经导入成功的采集：再次回传只清理远端，不再重新打包。
+
+    上一次导入成功但没有清理远端时，重试会从数据库读回上次写入的 artifact 记录，
+    而原始文件早已随上一次的临时目录消失。重新打包既没有意义，也会因为没有文件而失败，
+    所以 ``_load_source`` 在读到 ``import_status = imported`` 时直接返回这个标记。
+    """
+
+    state: CollectionState
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,7 +159,11 @@ async def deliver_from_context(ctx: PhaseContext) -> DeliveryReport | None:
     """
     if DELIVERY_OPTION not in ctx.options:
         return None
+    delivery_options = _mapping(ctx.options.get(DELIVERY_OPTION))
+    remote_path = _optional_text(delivery_options.get("remote_path"))
     source = await _load_source(ctx)
+    if isinstance(source, ImportedCollection):
+        return await _report_already_imported(ctx, source.state, remote_path)
     if source is None:
         return None
 
@@ -150,9 +173,7 @@ async def deliver_from_context(ctx: PhaseContext) -> DeliveryReport | None:
     except BootrecPackagingError as error:
         raise DeliveryError(f"打包失败：{error}") from error
 
-    delivery_options = _mapping(ctx.options.get(DELIVERY_OPTION))
     database_url = str(ctx.options.get(DATABASE_URL_OPTION) or get_settings().database_url)
-    remote_path = _optional_text(delivery_options.get("remote_path"))
     local_path = packaged.path
     transfer_report: TransferReport | None = None
     if remote_path:
@@ -184,9 +205,11 @@ async def deliver_from_context(ctx: PhaseContext) -> DeliveryReport | None:
                 remote_path,
                 imported=True,
             )
-    warnings = packaged.warnings
+    warnings = list(packaged.warnings)
     if source.journal is None:
-        warnings = (*warnings, NO_JOURNAL_WARNING)
+        warnings.append(NO_JOURNAL_WARNING)
+    if remote_path and remote_removed is False:
+        warnings.append(REMOTE_CLEANUP_FAILED_WARNING.format(path=remote_path))
     return DeliveryReport(
         status="imported",
         collection_id=packaged.collection_id,
@@ -198,7 +221,7 @@ async def deliver_from_context(ctx: PhaseContext) -> DeliveryReport | None:
         records_skipped=outcome.records_skipped,
         import_status=outcome.status,
         remote_removed=remote_removed,
-        warnings=warnings,
+        warnings=tuple(warnings),
     )
 
 
@@ -255,7 +278,35 @@ async def _pull_with_reconnect(
     )
 
 
-async def _load_source(ctx: PhaseContext) -> PackagingInput | None:
+async def _report_already_imported(
+    ctx: PhaseContext,
+    state: CollectionState,
+    remote_path: str | None,
+) -> DeliveryReport:
+    """已导入的采集：不重新打包，只清理远端并报告清理结果。"""
+    remote_removed: bool | None = None
+    warnings = [ALREADY_IMPORTED_WARNING]
+    if remote_path:
+        async with ctx.connect() as client:
+            remote_removed = await remove_remote_file(client, remote_path, imported=True)
+        if not remote_removed:
+            warnings.append(REMOTE_CLEANUP_FAILED_WARNING.format(path=remote_path))
+    return DeliveryReport(
+        status="already_imported",
+        collection_id=state.collection.collection_id,
+        imported=True,
+        import_status=state.import_status.value,
+        remote_removed=remote_removed,
+        warnings=tuple(warnings),
+    )
+
+
+async def _load_source(ctx: PhaseContext) -> PackagingInput | ImportedCollection | None:
+    """读回本次采集要打包的内容。
+
+    返回 ``ImportedCollection`` 表示该采集此前已经导入成功：调用方只做远端清理；
+    返回 ``None`` 表示本次没有可打包的数据。
+    """
     delivery_options = _mapping(ctx.options.get(DELIVERY_OPTION))
     collection_id = (
         _optional_text(
@@ -268,6 +319,10 @@ async def _load_source(ctx: PhaseContext) -> PackagingInput | None:
     try:
         store = DiagnosticStore(engine)
         state = await store.get_collection(collection_id)
+        if state is not None and state.import_status is ImportStatus.IMPORTED:
+            # 导入已经成功，原始文件却可能只存在于上一次的临时目录里。再打一次包既没必要，
+            # 也会因为没有文件而失败；重试需要做的只是把远端残留清理掉。
+            return ImportedCollection(state=state)
         records: list[dict[str, Any]] = []
         entities: list[BaseModel] = []
         machine: MachineEntity | None = None
@@ -554,6 +609,7 @@ __all__ = [
     "DEFAULT_DOWNLOAD_ATTEMPTS",
     "DeliveryError",
     "DeliveryReport",
+    "ImportedCollection",
     "JournalArtifacts",
     "deliver_from_context",
     "resolve_journal_artifacts",
