@@ -12,6 +12,8 @@
   ``INVOCATION_ID``）随 ``fields`` 原样写进 ``journal.jsonl``。
 - 资源缺失不补 0。整条指标流没有数据时补一条 ``available = false`` 的
   ``metric_stream`` 实体，并写明原因；部分流缺失时只补缺的那几条。
+- 数据库记录里的 ``artifact`` 记录如果指向本次容器里不存在的文件，标记为缺失：
+  不写进包内，并逐条记进打包结果的 ``warnings``；不伪造占位文件，也不让整次打包失败。
 
 生成的容器直接交给 1.3 的 ``validate_bootrec`` 复核；复核不通过就不返回路径，避免把坏包
 送进回传与导入流程。
@@ -254,6 +256,7 @@ def build_bootrec(data: PackagingInput, destination: str | Path) -> PackagingRes
         data.artifacts,
         collection=collection,
     )
+    records, missing_warnings = _drop_missing_artifact_records(records, artifact_files)
     records.extend(artifact_records)
     records = _unique_records(records)
     metric_records = [row for row in records if row.get("kind") == RecordKind.METRIC.value]
@@ -313,7 +316,7 @@ def build_bootrec(data: PackagingInput, destination: str | Path) -> PackagingRes
         record_count=len(records),
         journal_entry_count=len(journal_rows),
         resources_available=resources_available,
-        warnings=tuple(issue.format() for issue in report.warnings),
+        warnings=(*missing_warnings, *(issue.format() for issue in report.warnings)),
     )
 
 
@@ -640,6 +643,49 @@ def _artifact_entries(
         body["record_id"] = compute_record_id(body)
         records.append(body)
     return records, files
+
+
+MISSING_ARTIFACT_WARNING = (
+    "记录 {record_id} 引用的原始文件 {path} 不在本次容器里：该 artifact 记录标记为缺失，不写入包内"
+)
+
+
+def _drop_missing_artifact_records(
+    records: Sequence[Mapping[str, Any]],
+    artifact_files: Mapping[str, bytes],
+) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
+    """原始文件不在容器里时，去掉对应的 artifact 记录并留下明确警告。
+
+    从数据库记录重新打包时，上一次导入写入的 artifact 记录还会在库里，但原始文件只存在于
+    上一次打包的临时目录。`.bootrec` 不允许 artifact 记录指向不存在的文件
+    （`E_ARTIFACT_MISSING`），又不能用占位文件伪造原始数据，所以这里把这类记录标记为缺失：
+    不写进包内，并在打包结果的警告里逐条写明记录与路径，不让整次打包失败。
+    """
+    kept: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for record in records:
+        path = _artifact_path(record)
+        if path is None or path in artifact_files:
+            kept.append(record)
+            continue
+        warnings.append(
+            MISSING_ARTIFACT_WARNING.format(
+                record_id=record.get("record_id", "<未知>"),
+                path=path,
+            )
+        )
+    return kept, tuple(warnings)
+
+
+def _artifact_path(record: Mapping[str, Any]) -> str | None:
+    """artifact 记录引用的容器内路径；不是 artifact 记录时返回 ``None``。"""
+    if record.get("kind") != RecordKind.ARTIFACT.value:
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, Mapping):
+        return None
+    path = payload.get("path")
+    return path if isinstance(path, str) else None
 
 
 def _entities_jsonl(entities: Sequence[BaseModel]) -> bytes:

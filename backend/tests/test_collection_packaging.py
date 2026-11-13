@@ -318,3 +318,46 @@ def test_artifact_path_rejects_parent_traversal(tmp_path: Path) -> None:
             ),
             tmp_path / "traversal.bootrec",
         )
+
+
+def artifact_record(path: str) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "kind": "artifact",
+        "machine_id": MACHINE_ID,
+        "boot_id": BOOT_ID,
+        "collection_id": COLLECTION_ID,
+        "source_plugin": "collection.packager",
+        "stream_id": "artifacts",
+        "monotonic_ns": None,
+        "realtime_ns": CREATED_NS,
+        "clock_domain": "wall_realtime",
+        "entity": None,
+        "payload": {
+            "path": path,
+            "media_type": "application/x-journal-export",
+            "size_bytes": 12,
+            "sha256": "a" * 64,
+        },
+    }
+    return {"record_id": compute_record_id(body), **body}
+
+
+def test_artifact_record_without_container_file_is_marked_missing(tmp_path: Path) -> None:
+    """从数据库记录重新打包时，原始文件已经不在容器里也必须能打包。"""
+    data = PackagingInput(
+        collection=collection(),
+        machine=machine(),
+        boot=boot(),
+        records=(artifact_record("artifacts/journal.export"),),
+        resources_expected=False,
+    )
+
+    result = build_bootrec(data, tmp_path / "missing-artifact.bootrec")
+
+    report = validate_bootrec(result.path)
+    assert report.ok, [issue.format() for issue in report.errors]
+    records = read_jsonl(result.path, "records.jsonl")
+    assert all(record["kind"] != "artifact" for record in records)
+    assert any(
+        "artifacts/journal.export" in warning and "缺失" in warning for warning in result.warnings
+    )

@@ -37,6 +37,7 @@ from system_analyzer.domain.bootrec import (
 from system_analyzer.importers.bootrec_importer import BootrecImportOutcome
 from system_analyzer.remote.client import CommandResult
 from system_analyzer.remote.errors import SshConnectError
+from system_analyzer.storage import CollectionState, ImportStatus
 
 TARGET = "uos-152"
 CONFIG_PATH = "/etc/lightdm/lightdm.conf"
@@ -239,10 +240,12 @@ class _DeliveryClient:
         events: list[str],
         *,
         fail_download: bool,
+        fail_remove: bool = False,
     ) -> None:
         self._storage = storage
         self._events = events
         self._fail_download = fail_download
+        self._fail_remove = fail_remove
 
     async def download(self, remote_path: str, local_path: Path | str) -> None:
         self._events.append("download")
@@ -263,18 +266,31 @@ class _DeliveryClient:
         check: bool = True,
     ) -> CommandResult:
         if command.startswith("rm -f -- "):
-            self._storage.pop(shlex.split(command)[-1], None)
             self._events.append("rm")
+            if not self._fail_remove:
+                self._storage.pop(shlex.split(command)[-1], None)
+            return CommandResult(
+                command=command,
+                stdout="",
+                stderr="" if not self._fail_remove else "rm: 测试注入：删除失败",
+                exit_status=0 if not self._fail_remove else 1,
+            )
         return CommandResult(command=command, stdout="", stderr="", exit_status=0)
 
 
 class _DeliveryConnector:
     def __init__(
-        self, storage: dict[str, bytes], events: list[str], *, fail_download: bool
+        self,
+        storage: dict[str, bytes],
+        events: list[str],
+        *,
+        fail_download: bool,
+        fail_remove: bool = False,
     ) -> None:
         self._storage = storage
         self._events = events
         self._fail_download = fail_download
+        self._fail_remove = fail_remove
         self.connections = 0
 
     def connect(self, target_id: str):
@@ -285,6 +301,7 @@ class _DeliveryConnector:
                 self._storage,
                 self._events,
                 fail_download=self._fail_download,
+                fail_remove=self._fail_remove,
             )
 
         return connected()
@@ -344,6 +361,122 @@ async def test_deliver_from_context_imports_then_removes_remote(
     assert events == ["download", "import", "rm"]
     assert connector.connections == 2
     assert REMOTE_PACK not in storage
+
+
+def _imported_state() -> CollectionState:
+    return CollectionState(
+        collection=CollectionRef(
+            collection_id=COLLECTION_ID,
+            machine_id=MACHINE_ID,
+            boot_id=BOOT_ID,
+            mode=CollectionMode.SSH_COLLECTION,
+            created_realtime_ns=CREATED_NS,
+        ),
+        import_status=ImportStatus.IMPORTED,
+        import_error=None,
+        source_sha256=None,
+        resources_available=True,
+        resources_reason=None,
+    )
+
+
+class _ImportedStore:
+    """只实现已导入分支要用到的查询；读到记录就说明多做了不该做的事。"""
+
+    def __init__(self, state: CollectionState) -> None:
+        self._state = state
+
+    async def get_collection(self, collection_id: str) -> CollectionState:
+        return self._state
+
+    async def list_records_in_collection(self, *_args, **_kwargs):
+        raise AssertionError("已经导入成功的采集不应再读取记录重新打包")
+
+
+class _FakeEngine:
+    async def dispose(self) -> None:
+        return None
+
+
+def _patch_imported_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _imported_state()
+    monkeypatch.setattr(delivery, "create_storage_engine", lambda _url: _FakeEngine())
+    monkeypatch.setattr(delivery, "DiagnosticStore", lambda _engine: _ImportedStore(state))
+
+
+async def test_already_imported_collection_cleans_remote_without_repacking(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    storage = {REMOTE_PACK: b"remote-bootrec"}
+    events: list[str] = []
+    connector = _DeliveryConnector(storage, events, fail_download=False)
+    _patch_imported_store(monkeypatch)
+
+    def unexpected_import(_path: str, _database_url: str) -> BootrecImportOutcome:
+        raise AssertionError("已经导入成功的采集不应再次导入")
+
+    monkeypatch.setattr(delivery, "import_bootrec_file", unexpected_import)
+
+    ctx = _context(tmp_path, connector, options=_delivery_options())
+    report = await delivery.deliver_from_context(ctx)
+
+    assert report is not None
+    assert report.status == "already_imported"
+    assert report.imported is True
+    assert report.import_status == "imported"
+    assert report.pack_path is None
+    assert report.transfer is None
+    assert report.remote_removed is True
+    assert events == ["rm"]
+    assert connector.connections == 1
+    assert REMOTE_PACK not in storage
+
+
+async def test_already_imported_collection_keeps_remote_when_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    storage = {REMOTE_PACK: b"remote-bootrec"}
+    events: list[str] = []
+    connector = _DeliveryConnector(storage, events, fail_download=False, fail_remove=True)
+    _patch_imported_store(monkeypatch)
+
+    ctx = _context(tmp_path, connector, options=_delivery_options())
+    report = await delivery.deliver_from_context(ctx)
+
+    assert report is not None
+    assert report.status == "already_imported"
+    assert report.remote_removed is False
+    assert events == ["rm"]
+    assert REMOTE_PACK in storage
+    assert any("清理" in warning and REMOTE_PACK in warning for warning in report.warnings)
+
+
+async def test_deliver_from_context_reports_remote_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    storage = {REMOTE_PACK: b"remote-bootrec"}
+    events: list[str] = []
+    connector = _DeliveryConnector(storage, events, fail_download=False, fail_remove=True)
+
+    async def fake_source(_ctx):
+        return _packaging_source()
+
+    def fake_import(_path: str, _database_url: str) -> BootrecImportOutcome:
+        events.append("import")
+        return _import_outcome()
+
+    monkeypatch.setattr(delivery, "_load_source", fake_source)
+    monkeypatch.setattr(delivery, "import_bootrec_file", fake_import)
+
+    ctx = _context(tmp_path, connector, options=_delivery_options())
+    report = await delivery.deliver_from_context(ctx)
+
+    assert report is not None
+    assert report.status == "imported"
+    assert report.remote_removed is False
+    assert events == ["download", "import", "rm"]
+    assert REMOTE_PACK in storage
+    assert any("清理" in warning and REMOTE_PACK in warning for warning in report.warnings)
 
 
 async def test_deliver_from_context_keeps_remote_when_import_fails(
