@@ -9,6 +9,7 @@ import {
   panWindow,
   tailWindow,
   windowAround,
+  windowForCursor,
   windowSpan,
   zoomWindow,
 } from "@/lib/timeline/scale";
@@ -157,5 +158,34 @@ describe("tailWindow", () => {
 
   it("轴跨度不足时返回整条轴", () => {
     expect(tailWindow(axis, 1e15)).toEqual(axis);
+  });
+});
+
+describe("windowForCursor", () => {
+  const longAxis = { startNs: 0, endNs: 300_000_000_000 };
+
+  it("时刻在默认尾窗口内时保持尾窗口", () => {
+    expect(windowForCursor(290_000_000_000, longAxis)).toEqual({
+      startNs: 240_000_000_000,
+      endNs: 300_000_000_000,
+    });
+  });
+
+  it("时刻在尾窗口之外时以它为中心开同样跨度的窗口", () => {
+    expect(windowForCursor(100_000_000_000, longAxis)).toEqual({
+      startNs: 70_000_000_000,
+      endNs: 130_000_000_000,
+    });
+  });
+
+  it("靠近轴起点时窗口贴边，仍然包含该时刻", () => {
+    const range = windowForCursor(1_000_000_000, longAxis);
+    expect(range).toEqual({ startNs: 0, endNs: 60_000_000_000 });
+    expect(1_000_000_000).toBeGreaterThanOrEqual(range.startNs);
+    expect(1_000_000_000).toBeLessThanOrEqual(range.endNs);
+  });
+
+  it("轴跨度不足默认跨度时返回整条轴", () => {
+    expect(windowForCursor(5_000_000_000, axis)).toEqual(axis);
   });
 });

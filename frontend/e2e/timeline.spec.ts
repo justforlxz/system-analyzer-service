@@ -231,6 +231,36 @@ test.describe("统一时间线回放", () => {
     await expect(page.getByTestId("metric-chart").first()).toBeVisible();
   });
 
+  test("带 at_ns 打开时间线时初始游标停在该时刻，窗口包含它", async ({ page }) => {
+    const target = 5_000_000_000;
+    await page.goto(`${timelineUrl(BOOT.full)}&at_ns=${target}`);
+
+    await expect(page.getByTestId("timeline-replay")).toBeVisible();
+    await expect(page.getByTestId("cursor-position-exact")).toHaveText(String(target));
+    const windowText = (await page.getByTestId("window-range-exact").textContent()) ?? "";
+    const [windowStart, windowEnd] = windowText.split(" → ").map(Number);
+    expect(target).toBeGreaterThanOrEqual(windowStart);
+    expect(target).toBeLessThanOrEqual(windowEnd);
+    await expect(page).toHaveURL(new RegExp(`[?&]at_ns=${target}(&|$)`));
+  });
+
+  test("非法或负数 at_ns 按未提供处理，时间线照常打开", async ({ page }) => {
+    const tracks = fixture<FixtureTracks>("full-tracks");
+    const times = stopTimesOf(tracks);
+    const axis = axisOf(tracks);
+
+    for (const raw of ["abc", "-5"]) {
+      await page.goto(`${timelineUrl(BOOT.full)}&at_ns=${raw}`);
+
+      await expect(page.getByTestId("timeline-replay")).toBeVisible();
+      await expect(page.getByText("无法读取这次启动的时间线")).toHaveCount(0);
+      await expect(page.getByTestId("cursor-position-exact")).toHaveText(String(times[0]));
+      await expect(page.getByTestId("window-range-exact")).toHaveText(
+        `${axis.startNs} → ${axis.endNs}`,
+      );
+    }
+  });
+
   test("启动选择页列出可回放的启动", async ({ page }) => {
     await page.goto("/timeline");
 

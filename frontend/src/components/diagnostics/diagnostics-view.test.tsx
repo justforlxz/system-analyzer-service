@@ -8,6 +8,7 @@ import {
   DIAGNOSTICS_AXIS_END,
   DIAGNOSTICS_AXIS_START,
   DIAGNOSTICS_BOOT_ID,
+  DIAGNOSTICS_MACHINE_ID,
   diagnosticsCursor,
   diagnosticsMachine,
   diagnosticsServices,
@@ -72,7 +73,12 @@ function renderDiagnostics(diagnostics: ServiceDiagnosticsResponse = makeDiagnos
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  window.history.replaceState(null, "", "/");
 });
+
+function searchParams(): URLSearchParams {
+  return new URLSearchParams(window.location.search);
+}
 
 describe("DiagnosticsView", () => {
   it("展示状态、身份、生命周期、带证据的结论、Journal 与资源", async () => {
@@ -181,6 +187,52 @@ describe("DiagnosticsView", () => {
       ).toBe(true);
     });
     expect(screen.getByTestId("diagnostic-cursor")).toHaveTextContent("5000000000");
+  });
+
+  it("首次渲染把当前服务与游标写进地址栏", async () => {
+    stubApi();
+    renderDiagnostics();
+
+    await waitFor(() => {
+      expect(searchParams().get("entity")).toBe("service:nginx.service");
+      expect(searchParams().get("at_ns")).toBe("3000000000");
+    });
+  });
+
+  it("拖动游标后地址栏的 at_ns 立即更新", async () => {
+    stubApi();
+    renderDiagnostics();
+
+    fireEvent.change(screen.getByTestId("cursor-slider"), {
+      target: { value: "5000000000" },
+    });
+
+    await waitFor(() => expect(searchParams().get("at_ns")).toBe("5000000000"));
+    expect(searchParams().get("entity")).toBe("service:nginx.service");
+  });
+
+  it("切换服务后地址栏的 entity 与 at_ns 一起更新", async () => {
+    stubApi();
+    renderDiagnostics();
+
+    fireEvent.change(screen.getByTestId("service-select"), {
+      target: { value: "service:firefox.service" },
+    });
+
+    await waitFor(() => expect(searchParams().get("entity")).toBe("service:firefox.service"));
+    expect(searchParams().get("at_ns")).toBe("3000000000");
+  });
+
+  it("「回到时间线」链接带当前 at_ns", async () => {
+    stubApi();
+    renderDiagnostics();
+
+    const link = screen.getByRole("link", { name: "回到时间线" });
+    const url = new URL(link.getAttribute("href") ?? "", "http://frontend.test");
+    expect(url.pathname).toBe("/timeline");
+    expect(url.searchParams.get("machine_id")).toBe(DIAGNOSTICS_MACHINE_ID);
+    expect(url.searchParams.get("boot_id")).toBe(DIAGNOSTICS_BOOT_ID);
+    expect(url.searchParams.get("at_ns")).toBe("3000000000");
   });
 
   it("点证据跳到对应 Journal 记录，切换服务后重新读取该服务", async () => {

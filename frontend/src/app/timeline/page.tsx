@@ -10,7 +10,8 @@ import {
   fetchTracks,
   type CollectionResponse,
 } from "@/lib/api/client";
-import { tailWindow } from "@/lib/timeline/scale";
+import { parseCursorNs } from "@/lib/timeline/cursor-url";
+import { tailWindow, windowForCursor } from "@/lib/timeline/scale";
 
 export const dynamic = "force-dynamic";
 
@@ -59,11 +60,12 @@ export default async function TimelinePage({ searchParams }: PageProps) {
   const params = await searchParams;
   const machineId = firstValue(params.machine_id);
   const bootId = firstValue(params.boot_id);
+  const atNs = parseCursorNs(firstValue(params.at_ns));
 
   return (
     <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-10">
       {machineId && bootId ? (
-        <TimelineBoot machineId={machineId} bootId={bootId} />
+        <TimelineBoot machineId={machineId} bootId={bootId} atNs={atNs} />
       ) : (
         <BootPicker />
       )}
@@ -80,7 +82,7 @@ type BootData =
     }
   | { ok: false; message: string };
 
-async function loadBoot(machineId: string, bootId: string): Promise<BootData> {
+async function loadBoot(machineId: string, bootId: string, atNs: number | null): Promise<BootData> {
   try {
     // 先取游标拿轴范围，再只取末尾 60 秒的轨道。真实采集的 Journal 可能覆盖数天，
     // 一次取整条轴会把数十万条记录搬进浏览器；轴范围仍然完整显示，用户可以自行缩放。
@@ -92,7 +94,10 @@ async function loadBoot(machineId: string, bootId: string): Promise<BootData> {
       cursor.start_ns !== null && cursor.end_ns !== null
         ? { startNs: cursor.start_ns, endNs: cursor.end_ns }
         : null;
-    const window = axis === null ? null : tailWindow(axis);
+    // 地址栏给了 at_ns 就用它决定初始窗口：在默认尾窗口内保持尾窗口，否则以它为中心开窗，
+    // 保证打开链接时游标一定落在画出来的窗口里。
+    const window =
+      axis === null ? null : atNs === null ? tailWindow(axis) : windowForCursor(atNs, axis);
     const [tracks, initialCursor] = await Promise.all([
       fetchTracks(machineId, bootId, {
         startNs: window?.startNs,
@@ -101,7 +106,7 @@ async function loadBoot(machineId: string, bootId: string): Promise<BootData> {
       }),
       window === null
         ? Promise.resolve(cursor)
-        : fetchCursor(machineId, bootId, { atNs: window.startNs }),
+        : fetchCursor(machineId, bootId, { atNs: atNs ?? window.startNs }),
     ]);
     return { ok: true, machine, tracks, cursor: initialCursor };
   } catch (error) {
@@ -109,8 +114,16 @@ async function loadBoot(machineId: string, bootId: string): Promise<BootData> {
   }
 }
 
-async function TimelineBoot({ machineId, bootId }: { machineId: string; bootId: string }) {
-  const data = await loadBoot(machineId, bootId);
+async function TimelineBoot({
+  machineId,
+  bootId,
+  atNs,
+}: {
+  machineId: string;
+  bootId: string;
+  atNs: number | null;
+}) {
+  const data = await loadBoot(machineId, bootId, atNs);
   if (!data.ok) {
     return (
       <Panel title="无法读取这次启动的时间线" tone="error">
