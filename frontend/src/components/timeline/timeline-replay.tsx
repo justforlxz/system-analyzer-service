@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { EventTrack } from "@/components/timeline/event-track";
 import { MetricTrackChart } from "@/components/timeline/metric-track-chart";
+import { SelectionDetail, type TimelineSelection } from "@/components/timeline/selection-detail";
 import { SpanTrack } from "@/components/timeline/span-track";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,6 +43,7 @@ import {
   isOpenSpan,
   resourcesNotice,
   spanEndLabel,
+  timelineItemKey,
   trackCursorReadout,
   trackLabel,
   trackSourceLabel,
@@ -116,6 +118,7 @@ export function TimelineReplay({
     return axis ? { startNs: axis.startNs, endNs: axis.endNs } : { startNs: 0, endNs: 0 };
   });
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [selection, setSelection] = useState<TimelineSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const tracksRequestRef = useRef(0);
@@ -124,8 +127,23 @@ export function TimelineReplay({
     startX: number;
     width: number;
     originRange: WindowRange;
+    /** 按下时落在哪条事件刻度或区间条上；空白处为 null。 */
+    selectionKey: string | null;
     moved: boolean;
   } | null>(null);
+
+  // 轨道上画出来的条目按「采集号 + 记录号」建索引：指针抬起时只用这个键取回后端原始条目，
+  // 不从像素位置反推任何时刻。
+  const itemIndex = useMemo(() => {
+    const index = new Map<string, TimelineSelection>();
+    for (const track of tracksData.tracks) {
+      for (const item of track.items) {
+        if (item.type === "span") index.set(timelineItemKey(item), { kind: "span", item });
+        if (item.type === "event") index.set(timelineItemKey(item), { kind: "event", item });
+      }
+    }
+    return index;
+  }, [tracksData.tracks]);
 
   const displayRange = useMemo<WindowRange>(
     () => ({
@@ -202,6 +220,18 @@ export function TimelineReplay({
     [bootId, machine.machine_id],
   );
 
+  // 选中条目后用条目自己的 `monotonic_ns` 定位游标。没有该字段的条目只显示详情，
+  // 不请求游标，也不把空值交给后端（后端会把空值当成轴起点）。
+  const selectItem = useCallback(
+    (next: TimelineSelection) => {
+      setSelection(next);
+      if (next.item.monotonic_ns !== null) void locate(next.item.monotonic_ns);
+    },
+    [locate],
+  );
+
+  const clearSelection = useCallback(() => setSelection(null), []);
+
   const stepCursor = (forward: boolean) => {
     void locate(cursorPosition, forward);
   };
@@ -218,11 +248,15 @@ export function TimelineReplay({
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!axis) return;
     const rect = event.currentTarget.getBoundingClientRect();
+    const target = event.target as Element | null;
+    const selectionKey =
+      target?.closest("[data-selection-key]")?.getAttribute("data-selection-key") ?? null;
     draggingRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
       width: rect.width,
       originRange: displayRange,
+      selectionKey,
       moved: false,
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -243,6 +277,14 @@ export function TimelineReplay({
     draggingRef.current = null;
     if (!drag || drag.pointerId !== event.pointerId) return;
     if (drag.moved) return;
+    if (drag.selectionKey !== null) {
+      const selected = itemIndex.get(drag.selectionKey);
+      if (selected) {
+        selectItem(selected);
+        return;
+      }
+    }
+    clearSelection();
     const rect = event.currentTarget.getBoundingClientRect();
     if (rect.width <= 0) return;
     const fraction = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
@@ -287,6 +329,7 @@ export function TimelineReplay({
   const cursorFraction =
     cursorInside && cursorPosition !== null ? nsToFraction(cursorPosition, displayRange) : null;
   const hasData = axis !== null && tracksData.tracks.length > 0;
+  const selectedKey = selection === null ? null : timelineItemKey(selection.item);
 
   return (
     <section className="flex flex-col gap-4" data-testid="timeline-replay">
@@ -574,12 +617,22 @@ export function TimelineReplay({
                         />
                       ) : track.kind === "span" ? (
                         spans.length > 0 ? (
-                          <SpanTrack spans={spans} range={displayRange} />
+                          <SpanTrack
+                            spans={spans}
+                            range={displayRange}
+                            selectedKey={selectedKey}
+                            onSelect={(span) => selectItem({ kind: "span", item: span })}
+                          />
                         ) : (
                           <p className="px-3 py-2 text-xs text-slate-500">本窗口没有区间</p>
                         )
                       ) : trackEvents.length > 0 ? (
-                        <EventTrack events={trackEvents} range={displayRange} />
+                        <EventTrack
+                          events={trackEvents}
+                          range={displayRange}
+                          selectedKey={selectedKey}
+                          onSelect={(event) => selectItem({ kind: "event", item: event })}
+                        />
                       ) : (
                         <p className="px-3 py-2 text-xs text-slate-500">本窗口没有事件</p>
                       )}
@@ -632,6 +685,8 @@ export function TimelineReplay({
         </div>
       )}
 
+      {selection ? <SelectionDetail selection={selection} onClear={clearSelection} /> : null}
+
       {events.length > 0 ? (
         <section className="rounded-lg border border-slate-200 bg-white" data-testid="event-list">
           <h2 className="border-b border-slate-100 px-3 py-2 text-xs font-medium text-slate-700">
@@ -643,7 +698,7 @@ export function TimelineReplay({
                 <button
                   type="button"
                   className="flex w-full items-baseline gap-3 px-3 py-1.5 text-left text-xs hover:bg-slate-50"
-                  onClick={() => void locate(event.monotonic_ns)}
+                  onClick={() => selectItem({ kind: "event", item: event })}
                   data-testid="event-jump"
                   data-monotonic-ns={event.monotonic_ns ?? ""}
                 >

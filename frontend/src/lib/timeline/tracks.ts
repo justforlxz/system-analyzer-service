@@ -13,6 +13,11 @@ export type TrackGroup = {
   tracks: TrackResponse[];
 };
 
+/** 事件与区间在界面上的唯一键：`record_id` 只在一次采集内唯一，带上 `collection_id` 才不冲突。 */
+export function timelineItemKey(item: { collection_id: string; record_id: string }): string {
+  return JSON.stringify([item.collection_id, item.record_id]);
+}
+
 const GROUP_TITLES: Record<TrackGroupKey, { title: string; description: string }> = {
   span: { title: "Systemd Unit 生命周期", description: "每条区间是一段持续状态" },
   event: { title: "Journal 事件", description: "日志与 systemd 事件按时刻排列" },

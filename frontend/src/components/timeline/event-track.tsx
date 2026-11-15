@@ -2,6 +2,7 @@ import type { EventItem } from "@/lib/api/client";
 import { formatBootOffset, formatWallClockUtc } from "@/lib/timeline/format";
 import type { WindowRange } from "@/lib/timeline/scale";
 import { nsToFraction } from "@/lib/timeline/scale";
+import { timelineItemKey } from "@/lib/timeline/tracks";
 
 const VIEW_WIDTH = 1000;
 const VIEW_HEIGHT = 22;
@@ -26,10 +27,14 @@ function fillFor(event: EventItem): string {
 export function EventTrack({
   events,
   range,
+  selectedKey,
+  onSelect,
   testId,
 }: {
   events: EventItem[];
   range: WindowRange;
+  selectedKey: string | null;
+  onSelect: (event: EventItem) => void;
   testId?: string;
 }) {
   const marks = events
@@ -57,28 +62,50 @@ export function EventTrack({
         strokeWidth={1}
         vectorEffect="non-scaling-stroke"
       />
-      {marks.map(({ event, x }, index) => (
-        <g key={`${event.record_id}-${index}`}>
-          <rect
-            x={x - BAR_WIDTH / 2}
-            y={4}
-            width={BAR_WIDTH}
-            height={VIEW_HEIGHT - 8}
-            fill={fillFor(event)}
-          >
-            <title>
-              {[
-                formatBootOffset(event.monotonic_ns as number),
-                event.realtime_ns !== null ? formatWallClockUtc(event.realtime_ns) : null,
-                event.event_type,
-                event.message,
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            </title>
-          </rect>
-        </g>
-      ))}
+      {marks.map(({ event, x }, index) => {
+        const key = timelineItemKey(event);
+        const selected = key === selectedKey;
+        return (
+          <g key={`${event.record_id}-${index}`}>
+            <rect
+              x={x - BAR_WIDTH / 2}
+              y={4}
+              width={BAR_WIDTH}
+              height={VIEW_HEIGHT - 8}
+              fill={fillFor(event)}
+              stroke={selected ? "#0f172a" : undefined}
+              strokeWidth={selected ? 2 : undefined}
+              vectorEffect="non-scaling-stroke"
+              data-testid="event-mark"
+              data-record-id={event.record_id}
+              data-selection-key={key}
+              data-selected={selected ? "true" : "false"}
+              tabIndex={0}
+              role="button"
+              aria-label={`事件 ${event.event_type}${
+                event.monotonic_ns === null ? "" : `，${formatBootOffset(event.monotonic_ns)}`
+              }`}
+              className="cursor-pointer"
+              onKeyDown={(event_) => {
+                if (event_.key !== "Enter" && event_.key !== " ") return;
+                event_.preventDefault();
+                onSelect(event);
+              }}
+            >
+              <title>
+                {[
+                  formatBootOffset(event.monotonic_ns as number),
+                  event.realtime_ns !== null ? formatWallClockUtc(event.realtime_ns) : null,
+                  event.event_type,
+                  event.message,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </title>
+            </rect>
+          </g>
+        );
+      })}
     </svg>
   );
 }
