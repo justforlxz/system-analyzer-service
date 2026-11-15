@@ -14,6 +14,7 @@ import {
   type ServiceDiagnosticsResponse,
   type ServiceSummary,
 } from "@/lib/api/client";
+import { resolveDiagnosticsSelection } from "@/lib/diagnostics/selection";
 import type { WindowRange } from "@/lib/timeline/scale";
 
 export const dynamic = "force-dynamic";
@@ -119,12 +120,26 @@ async function loadDiagnostics(
         message: `这次启动里没有服务 ${requestedEntity}。`,
       };
     }
-    const target = requestedEntity ?? services.services[0].entity;
-    const diagnostics = await fetchServiceDiagnostics(machineId, bootId, target, { atNs });
     const axis =
       cursor.start_ns !== null && cursor.end_ns !== null
         ? { startNs: cursor.start_ns, endNs: cursor.end_ns }
         : null;
+    const selection = resolveDiagnosticsSelection({
+      services: services.services,
+      requestedEntity,
+      requestedAtNs: atNs,
+      axisEndNs: cursor.end_ns,
+    });
+    if (selection === null) {
+      return {
+        ok: false,
+        empty: true,
+        message: "这次启动里没有可诊断的服务。",
+      };
+    }
+    const diagnostics = await fetchServiceDiagnostics(machineId, bootId, selection.entity, {
+      atNs: selection.atNs,
+    });
     return {
       ok: true,
       machine,

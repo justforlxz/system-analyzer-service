@@ -59,6 +59,26 @@ from system_analyzer.timeline.models import (
 TIMELINE_KINDS: tuple[RecordKind, ...] = (RecordKind.EVENT, RecordKind.SPAN, RecordKind.METRIC)
 """本任务产出轨道的记录种类。Profile、Annotation、Artifact 的展示属于 2.x 与 4.x。"""
 
+
+def cursor_end_ns(records: Sequence[Record]) -> int | None:
+    """这次启动的最后一个可停靠时刻，与 ``TimelineEngine.cursor().end_ns`` 同一口径。
+
+    只统计时间线轨道里的记录，开放区间按采集窗口收尾。Profile、Annotation、Artifact 不在
+    时间线上，不能把它们的时间算进游标终点。
+    """
+    timeline_records = [
+        record
+        for record in records
+        if record.kind in TIMELINE_KINDS and record.clock_domain is _BOOT_MONOTONIC
+    ]
+    if not timeline_records:
+        return None
+    windows = _collection_windows(timeline_records, _BOOT_MONOTONIC)
+    items = _items(timeline_records, windows, _BOOT_MONOTONIC)
+    times = _stop_times(items)
+    return times[-1] if times else None
+
+
 DEFAULT_AXIS_CACHE_SECONDS = 10.0
 """整条轴的进程内缓存时间（秒）。
 

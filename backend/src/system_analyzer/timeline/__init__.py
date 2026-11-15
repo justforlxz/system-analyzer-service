@@ -13,6 +13,7 @@ from system_analyzer.timeline.engine import (
     TIMELINE_KINDS,
     TimelineEngine,
     TimelineReader,
+    cursor_end_ns,
 )
 from system_analyzer.timeline.models import (
     AxisItem,
@@ -55,4 +56,5 @@ __all__ = [
     "Track",
     "TrackState",
     "TrackStatus",
+    "cursor_end_ns",
 ]
