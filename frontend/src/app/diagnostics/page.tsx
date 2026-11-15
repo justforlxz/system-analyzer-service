@@ -15,6 +15,7 @@ import {
   type ServiceSummary,
 } from "@/lib/api/client";
 import { resolveDiagnosticsSelection } from "@/lib/diagnostics/selection";
+import { parseCursorNs } from "@/lib/timeline/cursor-url";
 import type { WindowRange } from "@/lib/timeline/scale";
 
 export const dynamic = "force-dynamic";
@@ -67,10 +68,7 @@ export default async function DiagnosticsPage({ searchParams }: PageProps) {
   const machineId = firstValue(params.machine_id);
   const bootId = firstValue(params.boot_id);
   const entity = firstValue(params.entity);
-  const rawAtNs = firstValue(params.at_ns);
-  const parsedAtNs = rawAtNs === null ? null : Number(rawAtNs);
-  const atNs =
-    parsedAtNs !== null && Number.isSafeInteger(parsedAtNs) && parsedAtNs >= 0 ? parsedAtNs : null;
+  const atNs = parseCursorNs(firstValue(params.at_ns));
 
   return (
     <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-10">

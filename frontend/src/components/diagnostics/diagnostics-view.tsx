@@ -26,6 +26,7 @@ import {
   formatNsExact,
   formatWallClockUtc,
 } from "@/lib/timeline/format";
+import { writeCursorToUrl } from "@/lib/timeline/cursor-url";
 import type { WindowRange } from "@/lib/timeline/scale";
 
 const FETCH_DELAY_MS = 120;
@@ -45,6 +46,15 @@ type DiagnosticsViewProps = {
   initialDiagnostics: ServiceDiagnosticsResponse;
   axis: WindowRange | null;
 };
+
+function timelineHref(machineId: string, bootId: string, atNs: number): string {
+  const params = new URLSearchParams({
+    machine_id: machineId,
+    boot_id: bootId,
+    at_ns: String(atNs),
+  });
+  return `/timeline?${params.toString()}`;
+}
 
 function stateLabel(state: string): string {
   const label = STATE_LABELS[state];
@@ -271,6 +281,12 @@ export function DiagnosticsView({
   const requestRef = useRef(0);
   const sliderValue = axis === null ? atNs : Math.min(Math.max(atNs, axis.startNs), axis.endNs);
 
+  // 首次渲染就把当前服务与游标写进地址栏，之后每次移动游标或切换服务都同步更新。
+  // replaceState 不触发服务端重新取数，刷新和复制链接都会回到这一画面。
+  useEffect(() => {
+    writeCursorToUrl({ atNs, entity: entityId });
+  }, [atNs, entityId]);
+
   useEffect(() => {
     if (entityId === diagnostics.entity && atNs === diagnostics.at_ns) return;
     const requestId = requestRef.current + 1;
@@ -378,10 +394,7 @@ export function DiagnosticsView({
               </option>
             ))}
           </select>
-          <Link
-            className="underline"
-            href={`/timeline?machine_id=${encodeURIComponent(machine.machine_id)}&boot_id=${encodeURIComponent(bootId)}`}
-          >
+          <Link className="underline" href={timelineHref(machine.machine_id, bootId, atNs)}>
             回到时间线
           </Link>
         </div>

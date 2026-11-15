@@ -91,7 +91,13 @@ function pressItem(element: HTMLElement) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  window.history.replaceState(null, "", "/");
 });
+
+function searchParams(): URLSearchParams {
+  return new URLSearchParams(window.location.search);
+}
 
 describe("TimelineReplay", () => {
   it("渲染生命周期、事件与资源三类轨道", async () => {
@@ -588,6 +594,69 @@ describe("TimelineReplay", () => {
     const badge = screen.getByTestId("track-open-span");
     expect(badge).toHaveTextContent("未闭合 1 段");
     expect(badge.getAttribute("title")).toContain("采集结束时仍在进行");
+  });
+
+  it("游标变化把 at_ns 写入地址栏，保留已有参数且不新增 tracks 请求", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/timeline?machine_id=machine%3Auos-PC&boot_id=boot-1&keep=yes",
+    );
+    const { calls } = stubApi({
+      cursor: (url) => makeCursor({ position_ns: Number(url.searchParams.get("at_ns")) }),
+    });
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 800,
+      height: 40,
+      top: 0,
+      left: 0,
+      right: 800,
+      bottom: 40,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    renderTimeline();
+
+    // 首屏游标也写进地址栏，复制链接即可回到当前画面
+    await waitFor(() => expect(searchParams().get("at_ns")).toBe("2000000000"));
+    const tracksBefore = calls.filter((call) => call.path.endsWith("/timeline/tracks")).length;
+
+    const plot = screen.getAllByTestId("track-plot")[0];
+    fireEvent.pointerDown(plot, { pointerId: 21, clientX: 400 });
+    fireEvent.pointerUp(plot, { pointerId: 21, clientX: 400 });
+
+    await waitFor(() => expect(searchParams().get("at_ns")).toBe("5000000000"));
+    expect(searchParams().get("machine_id")).toBe("machine:uos-PC");
+    expect(searchParams().get("boot_id")).toBe("boot-1");
+    expect(searchParams().get("keep")).toBe("yes");
+    expect(calls.filter((call) => call.path.endsWith("/timeline/tracks"))).toHaveLength(
+      tracksBefore,
+    );
+  });
+
+  it("页头的服务诊断链接带当前 at_ns", () => {
+    stubApi({});
+    renderTimeline(makeTracksResponse(), makeCursor({ position_ns: 3_000_000_000 }));
+
+    const link = screen.getByRole("link", { name: "服务诊断" });
+    const url = new URL(link.getAttribute("href") ?? "", "http://frontend.test");
+    expect(url.pathname).toBe("/diagnostics");
+    expect(url.searchParams.get("machine_id")).toBe(MACHINE_ID);
+    expect(url.searchParams.get("boot_id")).toBe(BOOT_ID);
+    expect(url.searchParams.get("at_ns")).toBe("3000000000");
+  });
+
+  it("游标为 null 时页头的服务诊断链接不带 at_ns", () => {
+    stubApi({});
+    renderTimeline(
+      makeTracksResponse(),
+      makeCursor({ position_ns: null, previous_ns: null, next_ns: null }),
+    );
+
+    const link = screen.getByRole("link", { name: "服务诊断" });
+    const url = new URL(link.getAttribute("href") ?? "", "http://frontend.test");
+    expect(url.searchParams.has("at_ns")).toBe(false);
   });
 
   it("service 轨道的名称是诊断链接，带 entity 与当前游标 at_ns", async () => {

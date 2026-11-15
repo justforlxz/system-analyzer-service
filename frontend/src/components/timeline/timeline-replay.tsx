@@ -22,6 +22,7 @@ import {
   type TrackResponse,
   type TracksResponse,
 } from "@/lib/api/client";
+import { writeCursorToUrl } from "@/lib/timeline/cursor-url";
 import {
   formatBootOffset,
   formatDuration,
@@ -87,6 +88,13 @@ function trackDiagnosticsHref(
   ];
   if (atNs !== null) params.push(`at_ns=${atNs}`);
   return `/diagnostics?${params.join("&")}`;
+}
+
+/** 页头的「服务诊断」链接带当前游标，保证跳过去停在同一条时间线上。 */
+function headerDiagnosticsHref(machineId: string, bootId: string, atNs: number | null): string {
+  const params = new URLSearchParams({ machine_id: machineId, boot_id: bootId });
+  if (atNs !== null) params.set("at_ns", String(atNs));
+  return `/diagnostics?${params.toString()}`;
 }
 
 type TrackSlices = { spans: SpanItem[]; events: EventItem[]; metrics: MetricItem[] };
@@ -173,6 +181,11 @@ export function TimelineReplay({
 
   const cursorPosition = cursor.position_ns;
   const cursorInside = cursorPosition !== null && isInsideWindow(cursorPosition, displayRange);
+
+  // 游标变化就写地址栏。replaceState 不触发路由跳转，窗口与轨道保持原样，也不会新增请求。
+  useEffect(() => {
+    writeCursorToUrl({ atNs: cursorPosition });
+  }, [cursorPosition]);
 
   const loadTracks = useCallback(
     async (target: WindowRange) => {
@@ -358,9 +371,7 @@ export function TimelineReplay({
           <span className="font-mono text-xs text-slate-500">启动 {bootId}</span>
           <Link
             className="text-xs text-slate-600 underline"
-            href={`/diagnostics?machine_id=${encodeURIComponent(
-              machine.machine_id,
-            )}&boot_id=${encodeURIComponent(bootId)}`}
+            href={headerDiagnosticsHref(machine.machine_id, bootId, cursorPosition)}
           >
             服务诊断
           </Link>

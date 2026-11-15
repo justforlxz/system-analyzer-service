@@ -105,3 +105,15 @@ export function tailWindow(
   const startNs = Math.max(axis.startNs, axis.endNs - Math.max(1, Math.round(spanNs)));
   return { startNs, endNs: axis.endNs };
 }
+
+/** 打开带 `at_ns` 的时间线时决定初始窗口：时刻在默认尾窗口内就保持尾窗口，
+ * 否则以它为中心开一段同样跨度的窗口。两种结果都夹在轴范围内。 */
+export function windowForCursor(
+  atNs: number,
+  axis: WindowRange,
+  spanNs: number = DEFAULT_INITIAL_WINDOW_NS,
+): WindowRange {
+  const tail = tailWindow(axis, spanNs);
+  if (isInsideWindow(atNs, tail)) return tail;
+  return windowAround(atNs, windowSpan(tail), axis);
+}
