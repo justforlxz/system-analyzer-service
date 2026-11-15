@@ -417,6 +417,10 @@ export function DiagnosticsView({
             <p className="text-[11px] text-slate-500">
               上一帧 / 下一帧使用时间线接口的可停靠时刻；拖动滑块按当前位置重建服务状态。
             </p>
+            <p className="text-[11px] text-slate-500" data-testid="default-cursor-note">
+              页面默认停在这次启动的最后一个可停靠时刻，也就是时间线游标接口的 end_ns；地址里给出
+              at_ns 时按给出的时刻。
+            </p>
           </div>
         ) : null}
       </header>

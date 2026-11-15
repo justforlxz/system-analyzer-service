@@ -53,7 +53,11 @@ async def read_service_diagnostics(
     machine_id: str,
     boot_id: str,
     entity_id: str,
-    at_ns: int | None = Query(None, ge=0, description="时间游标（boot 内纳秒）；不传用最早时刻"),
+    at_ns: int | None = Query(
+        None,
+        ge=0,
+        description="时间游标（boot 内纳秒）；不传用整次启动最后一个可停靠时刻",
+    ),
     journal_window_ns: int = Query(
         DEFAULT_JOURNAL_WINDOW_NS,
         ge=1,

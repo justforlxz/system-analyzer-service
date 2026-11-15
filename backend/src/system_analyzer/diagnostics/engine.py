@@ -37,6 +37,7 @@ from system_analyzer.diagnostics.models import (
     Uncertainty,
 )
 from system_analyzer.domain.bootrec import BootEntity, Record, RecordKind
+from system_analyzer.timeline import cursor_end_ns
 
 SERVICE_PREFIX = "service:"
 DEFAULT_JOURNAL_WINDOW_NS = 60_000_000_000
@@ -109,7 +110,7 @@ class ServiceDiagnosticsEngine:
         at_ns: int | None = None,
         journal_window_ns: int = DEFAULT_JOURNAL_WINDOW_NS,
     ) -> ServiceDiagnostics:
-        """指定服务在 ``at_ns`` 时刻的状态与诊断证据；缺省停在这次启动的最早时刻。"""
+        """指定服务在 ``at_ns`` 时刻的状态与诊断证据；缺省停在这次启动最后一个可停靠时刻。"""
         await self._require_boot(machine_id, boot_id)
         if not entity_id.startswith(SERVICE_PREFIX):
             raise DiagnosticsServiceNotFoundError(
@@ -612,8 +613,13 @@ def _exists(entity_id: str, records: Sequence[Record], entities: Sequence[Any]) 
 
 
 def _default_at(records: Sequence[Record]) -> int:
-    moments = [record.monotonic_ns for record in records if record.monotonic_ns is not None]
-    return min(moments, default=0)
+    """不传游标时的默认时刻：这次启动最后一个可停靠时刻。
+
+    与时间线游标的 ``end_ns`` 使用同一套计算：只统计时间线轨道里的 event、span、metric，
+    区间结束时刻也计入。启动最早时刻通常早于大多数服务的生命周期，停在那里只能得到
+    「无法确定」。
+    """
+    return cursor_end_ns(records) or 0
 
 
 def _data_end(records: Sequence[Record]) -> int | None:

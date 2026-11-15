@@ -16,12 +16,25 @@
 | 地址                                                                 | 行为                                                     |
 | -------------------------------------------------------------------- | -------------------------------------------------------- |
 | `/diagnostics`                                                       | 按「机器 + 启动」列出已经导入的采集，选择后进入诊断视图  |
-| `/diagnostics?machine_id=<id>&boot_id=<id>`                          | 打开这次启动，默认选第一个服务                           |
+| `/diagnostics?machine_id=<id>&boot_id=<id>`                          | 打开这次启动，按第 1.1 节的规则选默认服务与默认时刻      |
 | `/diagnostics?machine_id=<id>&boot_id=<id>&entity=service:<unit>`    | 直接打开指定服务                                         |
 | `/diagnostics?machine_id=<id>&boot_id=<id>&entity=service:<unit>&at_ns=<纳秒>` | 同时指定初始游标                               |
 
 时间线页面与服务诊断页面互相有链接：时间线页头的「服务诊断」进入当前启动的诊断视图，诊断页头的
 「回到时间线」返回同一台机器、同一次启动的时间线。
+
+### 1.1 默认服务与默认时刻
+
+不带 `entity` 打开时，默认服务先限定在有生命周期区间的服务（`lifecycle_start_ns` 非空），
+在其中取分析结论最多者（`annotation_count` 最大），结论数相同按 `unit` 字母序取第一个。
+没有任何服务有生命周期区间时，按 `unit` 字母序取第一个，也就是 `/diagnostics/services`
+返回的第一个服务。结果稳定，不依赖服务列表的请求顺序。默认服务使用 `/diagnostics/services`
+已有的 `lifecycle_start_ns`、`lifecycle_end_ns` 与 `annotation_count`，接口返回结构不变。
+
+不带 `at_ns` 打开时，默认时刻是这次启动的最后一个可停靠时刻，即时间线游标接口的 `end_ns`，
+区间结束时刻也计入。它与所选服务自己的生命周期结束时刻无关。不使用这次启动最早的记录时刻：
+那里通常还没有所选服务的生命周期，状态只能显示「无法确定」。地址里给出 `entity` 或 `at_ns`
+时按给出的值，页面不改写它们。页面显示的游标就是请求使用的 `at_ns`。
 
 ## 2. 读接口
 
@@ -34,7 +47,8 @@
 
 第二个接口的参数：
 
-- `at_ns`：boot 内纳秒游标。不传时使用这次启动最早的时刻。
+- `at_ns`：boot 内纳秒游标。不传时使用时间线游标的 `end_ns`，与前端默认值一致；只统计
+  event、span、metric 的时刻与区间结束时刻，`profile`、`annotation`、`artifact` 不计入。
 - `journal_window_ns`：关联 Journal 在游标前后各取多长，默认 60 秒，最大 1 小时。
 
 `entity_id` 使用 `service:<unit>` 形式，例如 `service:nginx.service`。
@@ -122,3 +136,5 @@ npm run lint && npm run typecheck && npm test && npm run build
 - Journal-only 归档没有 CPU、内存、磁盘 I/O 采样，诊断页会明确显示资源不可用，不伪造 0。
 - 关联 Journal 默认只取游标前后各 60 秒；需要更多上下文时通过 `journal_window_ns` 扩大窗口。
 - 诊断读侧只认 `service:<unit>` 实体；其它实体不会出现在服务选择器里。
+- 没有生命周期区间的服务停在这次启动末尾，状态仍可能显示「无法确定」。这是数据里没有生命
+  周期证据的结果，不补造状态。

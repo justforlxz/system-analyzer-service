@@ -1831,7 +1831,7 @@ export interface operations {
     read_service_diagnostics_api_machines__machine_id__boots__boot_id__diagnostics_services__entity_id__get: {
         parameters: {
             query?: {
-                /** @description 时间游标（boot 内纳秒）；不传用最早时刻 */
+                /** @description 时间游标（boot 内纳秒）；不传用整次启动最后一个可停靠时刻 */
                 at_ns?: number | null;
                 /** @description 关联 Journal 在游标前后各取多长时间，单位纳秒 */
                 journal_window_ns?: number;

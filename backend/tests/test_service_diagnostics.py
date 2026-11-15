@@ -29,6 +29,7 @@ from system_analyzer.domain.bootrec import (
     compute_record_id,
 )
 from system_analyzer.importers import journal_archive as archive
+from system_analyzer.timeline import TimelineEngine
 
 MACHINE = "machine:uos-PC"
 BOOT = "boot-a"
@@ -59,11 +60,22 @@ class FakeReader:
         machine_id: str,
         boot_id: str,
         *,
+        clock_domain: ClockDomain = ClockDomain.BOOT_MONOTONIC,
         kinds: Sequence[RecordKind] | None = None,
     ) -> list[Record]:
-        if kinds is None:
-            return list(self.records)
-        return [record for record in self.records if record.kind in kinds]
+        return [
+            record
+            for record in self.records
+            if record.clock_domain is clock_domain and (kinds is None or record.kind in kinds)
+        ]
+
+    async def list_metric_streams(self, machine_id: str, boot_id: str) -> list[Any]:
+        return []
+
+    async def list_collections(
+        self, *, machine_id: str | None = None, boot_id: str | None = None
+    ) -> list[Any]:
+        return []
 
     async def list_entities(self, machine_id: str, boot_id: str) -> list[Any]:
         return list(self.entities)
@@ -165,6 +177,51 @@ def service_entity(entity_id: str, unit: str) -> GenericEntity:
         name=unit,
         attributes={"unit": unit},
     )
+
+
+async def test_default_cursor_is_the_last_stoppable_moment() -> None:
+    """不传 at_ns 时停在最后一个可停靠时刻，不是这次启动最早的记录时刻。"""
+    records = [
+        span(NGINX, start=1_000, end=2_000, span_type="service.activating", state="active"),
+        span(NGINX, start=2_000, end=5_000, span_type="service.active", state="inactive"),
+        event(
+            monotonic_ns=3_000,
+            message="worker process started",
+            attributes={"unit": "nginx.service"},
+        ),
+    ]
+    engine = ServiceDiagnosticsEngine(FakeReader(records, [service_entity(NGINX, "nginx.service")]))
+
+    result = await engine.service_at(MACHINE, BOOT, NGINX)
+
+    assert result.at_ns == 5_000
+    assert result.state.state == "inactive"
+    assert result.state.since_ns == 5_000
+
+
+async def test_default_cursor_matches_timeline_cursor_when_profile_is_last() -> None:
+    """profile 记录不在时间线轴上，不能把诊断默认时刻推到 cursor.end_ns 之后。"""
+    records = [
+        span(NGINX, start=1_000, end=2_000, span_type="service.activating", state="active"),
+        span(NGINX, start=2_000, end=5_000, span_type="service.active", state="inactive"),
+        event(
+            monotonic_ns=3_000,
+            message="worker process started",
+            attributes={"unit": "nginx.service"},
+        ),
+        make_record(
+            RecordKind.PROFILE,
+            {"profile_type": "perf", "artifact_path": "artifacts/perf.data"},
+            monotonic_ns=9_000,
+        ),
+    ]
+    reader = FakeReader(records, [service_entity(NGINX, "nginx.service")])
+
+    result = await ServiceDiagnosticsEngine(reader).service_at(MACHINE, BOOT, NGINX)
+    cursor = await TimelineEngine(reader).cursor(MACHINE, BOOT)
+
+    assert cursor.end_ns == 5_000
+    assert result.at_ns == cursor.end_ns
 
 
 async def test_state_uses_cursor_not_the_completed_span_terminal_state() -> None:
