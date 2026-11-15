@@ -8,6 +8,8 @@ import { panWindow, zoomWindow } from "@/lib/timeline/scale";
 import {
   AXIS_END,
   AXIS_START,
+  BOOT_ID,
+  MACHINE_ID,
   makeCursor,
   makeEvent,
   makeEventTrack,
@@ -586,6 +588,56 @@ describe("TimelineReplay", () => {
     const badge = screen.getByTestId("track-open-span");
     expect(badge).toHaveTextContent("未闭合 1 段");
     expect(badge.getAttribute("title")).toContain("采集结束时仍在进行");
+  });
+
+  it("service 轨道的名称是诊断链接，带 entity 与当前游标 at_ns", async () => {
+    const entity = "service:dbus-org.freedesktop@x.service";
+    const track = makeSpanTrack({
+      track_id: `span:systemd:systemd.units:${entity}`,
+      entity,
+    });
+    stubApi({ tracks: () => makeTracksResponse({ tracks: [track] }) });
+    renderTimeline(
+      makeTracksResponse({ tracks: [track] }),
+      makeCursor({ position_ns: 2_000_000_000 }),
+    );
+
+    const link = screen.getByRole("link", { name: "dbus-org.freedesktop@x.service" });
+    const href = link.getAttribute("href") ?? "";
+    const url = new URL(href, "http://frontend.test");
+    expect(url.pathname).toBe("/diagnostics");
+    expect(url.searchParams.get("machine_id")).toBe(MACHINE_ID);
+    expect(url.searchParams.get("boot_id")).toBe(BOOT_ID);
+    expect(url.searchParams.get("entity")).toBe(entity);
+    expect(url.searchParams.get("at_ns")).toBe("2000000000");
+    expect(href).toContain("entity=service%3Adbus-org.freedesktop%40x.service");
+  });
+
+  it("非 service 轨道不渲染诊断链接", async () => {
+    stubApi({});
+    renderTimeline(
+      makeTracksResponse({
+        tracks: [
+          makeEventTrack({ track_id: "event:journald:journal:session:2", entity: "session:2" }),
+          makeMetricTrack(),
+        ],
+      }),
+    );
+
+    expect(screen.getAllByTestId("track-row")).toHaveLength(2);
+    expect(screen.queryAllByTestId("track-label-link")).toHaveLength(0);
+  });
+
+  it("游标为 null 时诊断链接不带 at_ns", async () => {
+    const track = makeSpanTrack();
+    stubApi({ tracks: () => makeTracksResponse({ tracks: [track] }) });
+    renderTimeline(
+      makeTracksResponse({ tracks: [track] }),
+      makeCursor({ position_ns: null, previous_ns: null, next_ns: null }),
+    );
+
+    const link = screen.getByRole("link", { name: "nginx.service" });
+    expect(link.getAttribute("href")).not.toContain("at_ns");
   });
 });
 

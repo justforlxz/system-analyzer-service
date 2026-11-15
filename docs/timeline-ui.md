@@ -82,6 +82,12 @@ FastAPI。
   轨道标签里。这样三条资源轨道与生命周期、事件轨道的绘图区宽度完全一致，共用的游标线才能一条
   直线贯穿到底。
 - 资源轨道与其它轨道共用同一个左边界（标签列固定宽度 `TRACK_LABEL_WIDTH = 240`）。
+- 属于服务实体的轨道（`track.entity` 以 `service:` 开头）把轨道名渲染成链接，指向
+  `/diagnostics?machine_id=<id>&boot_id=<id>&entity=<entity>&at_ns=<游标>`。`entity` 按
+  `encodeURIComponent` 编码；`at_ns` 取当前游标 `cursor.position_ns`，游标为 `null` 时不带
+  该参数，交给诊断页的默认时刻。诊断页本来就会读取 `entity` 与 `at_ns`（见
+  `docs/service-diagnostics.md`），这里只负责把当前实体和时刻带过去。非服务轨道（Journal-only
+  的 session、资源指标流等）的轨道名保持纯文本，避免打开诊断页后显示「没有服务」。
 - 每个分组默认只渲染前 20 条在当前窗口里有数据的轨道；其余轨道用「显示更多轨道（还有 N 条）」
   展开。没有数据的可用轨道不占一行，不可用与无数据的指标流仍然显示，因为那本身就是需要如实
   展示的状态。
@@ -114,6 +120,7 @@ FastAPI。
 | 按住轨道左右拖动           | 平移窗口，超出轴时贴边；移动超过 3 像素才算拖动                   | `tracks(start_ns, end_ns)`（连续拖动合并为一次请求） |
 | 在轨道上单击空白处         | 把游标定位到点击处对应的时刻，并清除已选中的条目                  | `cursor(at_ns=...)`                                  |
 | 点事件刻度或区间条         | 选中该条目，显示详情，把游标定位到条目的 `monotonic_ns`           | `cursor(at_ns=<条目的 monotonic_ns>)`                |
+| 点服务轨道的轨道名         | 打开该实体的服务诊断页，并带上当前游标时刻                        | 页面跳转 `/diagnostics?...&entity=...&at_ns=...`     |
 | 「上一帧」/「下一帧」      | 游标移动到前后最近的可停靠时刻                                    | `cursor(at_ns=..., forward=...)`                     |
 | 点「关键事件」列表中的一条 | 选中该事件并显示详情；有 `monotonic_ns` 时同时定位游标            | 有位置时 `cursor(at_ns=...)`；无位置时不发请求       |
 
@@ -195,7 +202,7 @@ cd frontend && npx playwright install chromium && npm run test:e2e
 - 单元测试（Vitest）：`src/lib/timeline/*.test.ts` 覆盖像素映射、缩放/平移夹紧、时间格式化、
   轨道分组与状态文案、ECharts 配置；`src/components/timeline/timeline-replay.test.tsx` 覆盖
   共用游标、换帧、缩放、拖动、事件定位、事件与区间选中及详情、无时刻条目的处理、
-  无数据/不可用/资源不可用、空数据与错误提示。
+  无数据/不可用/资源不可用、空数据与错误提示，以及服务轨道名到诊断页的链接参数。
 - 端到端测试（Playwright）：`frontend/e2e/timeline.spec.ts`。E2E 不依赖真实后端：
   `e2e/mock-api/server.mjs` 用 `e2e/mock-api/fixtures/` 里从真实后端抓下来的响应起一个假 API，
   Playwright 在两份 `webServer` 配置里先起假 API、再用它作为 `NEXT_PUBLIC_API_BASE_URL` 起 Next.js。
