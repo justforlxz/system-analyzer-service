@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +28,7 @@ from system_analyzer.importers.journal_archive import (
     build_bundle,
     detect,
     parse_journal_archive,
+    resolve_max_decompressed_bytes,
 )
 from system_analyzer.plugins.contracts import (
     PLUGIN_API_VERSION,
@@ -89,7 +89,7 @@ class JournalArchiveImporter(PluginBase):
             )
 
         parsed = parse_journal_archive(
-            path, max_decompressed_bytes=_max_decompressed_bytes(context.config)
+            path, max_decompressed_bytes=resolve_max_decompressed_bytes(context.config)
         )
         bundle = build_bundle(parsed, source_sha256=archive_digest(path))
         outcome = data.import_collection(
@@ -118,18 +118,6 @@ def _reject_coroutine(result: Any) -> None:
         "数据入口 import_collection 返回了协程，导入需要同步入口；"
         "Core 应把存储层包成同步的 get_collection / import_collection 后写入 context.data"
     )
-
-
-def _max_decompressed_bytes(config: Mapping[str, Any]) -> int:
-    """从插件配置取体积上限，没有配置就用默认值。
-
-    Core 会先用 ``config_schema`` 校验一遍；这里再查一次类型与正负，因为调用方也可以直接构造
-    ``PluginContext``（测试与将来的 Worker 接线），那条路径不过 Core 的校验。
-    """
-    value = config.get(CONFIG_MAX_BYTES, DEFAULT_MAX_DECOMPRESSED_BYTES)
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise PluginInputError(f"插件配置 {CONFIG_MAX_BYTES} 必须是正整数，实际是 {value!r}")
-    return value
 
 
 __all__ = ["JournalArchiveImporter"]

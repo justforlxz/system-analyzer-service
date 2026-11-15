@@ -29,7 +29,13 @@ from system_analyzer.domain.bootrec import (
     MachineEntity,
     Record,
 )
-from system_analyzer.importers.journal_archive import build_bundle, detect, parse_journal_archive
+from system_analyzer.importers import journal_archive
+from system_analyzer.importers.journal_archive import (
+    CONFIG_MAX_BYTES,
+    build_bundle,
+    detect,
+    parse_journal_archive,
+)
 from system_analyzer.plugins.builtins import register_builtins
 from system_analyzer.plugins.contracts import (
     CollectorPlugin,
@@ -164,8 +170,18 @@ def _render(entries: Sequence[Mapping[str, str]]) -> str:
     return "".join(blocks)
 
 
-def _context(plugin: JournalCollector, data: RecordingDataAccess) -> PluginContext:
-    return PluginContext(plugin_id=plugin.spec.id, data=data, run_id=RUN_ID)
+def _context(
+    plugin: JournalCollector,
+    data: RecordingDataAccess,
+    *,
+    config: Mapping[str, Any] | None = None,
+) -> PluginContext:
+    return PluginContext(
+        plugin_id=plugin.spec.id,
+        data=data,
+        config=config or {},
+        run_id=RUN_ID,
+    )
 
 
 def _collect(
@@ -173,6 +189,7 @@ def _collect(
     *,
     entries: Sequence[Mapping[str, str]],
     options: Mapping[str, Any] | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> tuple[JournalCollector, FakeJournalRemote, RecordingDataAccess, Any]:
     remote = FakeJournalRemote(entries)
     plugin = JournalCollector(remote_factory=lambda _options: remote)
@@ -187,7 +204,7 @@ def _collect(
             **(options or {}),
         },
     )
-    result = plugin.collect(request, _context(plugin, data))
+    result = plugin.collect(request, _context(plugin, data, config=config))
     return plugin, remote, data, result
 
 
@@ -423,6 +440,65 @@ def test_empty_window_writes_only_cursor(tmp_path: Any) -> None:
     payload = json.loads(cursor_file.read_text(encoding="utf-8"))
     assert payload["cursor"] == "cursor-old"
     assert payload["entry_count"] == 0
+
+
+def test_configured_limit_larger_than_default_accepts_a_bigger_export(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """部署配置调大上限后，超过默认上限的导出仍能解析。
+
+    默认上限是 512 MiB；为了不让单元测试准备 512 MiB 的合成文件，这里把默认值降到 4 KiB，
+    再用 20 KiB 的导出验证「默认拒绝、配置放行」这条分支。
+    """
+    monkeypatch.setattr(journal_archive, "DEFAULT_MAX_DECOMPRESSED_BYTES", 4096)
+    entries = [_entry(1, message="M" * 20_000)]
+
+    with pytest.raises(PluginInputError, match="超过上限"):
+        _collect(tmp_path, entries=entries)
+
+    _, _, data, result = _collect(
+        tmp_path,
+        entries=entries,
+        config={CONFIG_MAX_BYTES: 100_000},
+    )
+
+    assert result.records_written == 1
+    assert len(data.records) == 1
+
+
+def test_limit_error_reports_actual_usage_and_deployment_key(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """超限错误必须给出实际上限、实际占用，以及真正生效的部署配置键。"""
+    monkeypatch.setattr(journal_archive, "DEFAULT_MAX_DECOMPRESSED_BYTES", 4096)
+    entries = [_entry(1, message="M" * 20_000)]
+
+    with pytest.raises(PluginInputError) as raised:
+        _collect(tmp_path, entries=entries)
+
+    message = str(raised.value)
+    assert "已占用" in message
+    assert "上限 4096 字节" in message
+    assert "SAS_JOURNAL_MAX_DECOMPRESSED_BYTES" in message
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, "1024"])
+def test_collector_rejects_an_invalid_configured_limit(tmp_path: Any, limit: Any) -> None:
+    """直接构造 PluginContext 时 Core 的校验不生效，采集器自己必须挡住非法值。"""
+    with pytest.raises(PluginInputError, match=CONFIG_MAX_BYTES):
+        _collect(tmp_path, entries=[_entry(1)], config={CONFIG_MAX_BYTES: limit})
+
+
+def test_config_schema_declares_the_limit() -> None:
+    """上限进入插件清单后，Core 的 invoke 会按 schema 先校验。"""
+    from system_analyzer.plugins.config import PluginConfigError, validate_plugin_config
+
+    plugin = JournalCollector()
+
+    assert validate_plugin_config(plugin.spec, {}) == {}
+    assert validate_plugin_config(plugin.spec, {CONFIG_MAX_BYTES: 1024}) == {CONFIG_MAX_BYTES: 1024}
+    with pytest.raises(PluginConfigError, match=CONFIG_MAX_BYTES):
+        validate_plugin_config(plugin.spec, {CONFIG_MAX_BYTES: "big"})
 
 
 def test_missing_collection_id_is_a_plugin_input_error() -> None:

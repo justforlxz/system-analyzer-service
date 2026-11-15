@@ -32,7 +32,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from system_analyzer.collectors.journal import journal_entities
+from system_analyzer.collectors.journal import DEPLOYMENT_MAX_BYTES_ENV, journal_entities
 from system_analyzer.collectors.resources import (
     CGROUP_CPU,
     CGROUP_DISK_READ,
@@ -48,6 +48,7 @@ from system_analyzer.collectors.resources import (
     UNIT_MEMORY,
     metric_stream_entities,
 )
+from system_analyzer.core.config import get_settings
 from system_analyzer.domain.bootrec import (
     ARTIFACTS_PREFIX,
     ENTITIES_NAME,
@@ -69,6 +70,7 @@ from system_analyzer.domain.bootrec import (
 from system_analyzer.domain.time_base import journal_event_position
 from system_analyzer.importers.journal_archive import (
     JournalBundle,
+    JournalDecompressedLimitError,
     archive_digest,
     build_bundle,
     parse_journal_archive,
@@ -175,6 +177,7 @@ def collect_journal(
     collection: CollectionRef,
     machine_id: str | None = None,
     boot_id: str | None = None,
+    max_decompressed_bytes: int | None = None,
 ) -> JournalData:
     """解析一份 Journal 导出文件，返回归一化条目、事件记录与实体。
 
@@ -182,7 +185,19 @@ def collect_journal(
     3.5 的做法一致：只改 machine、boot、collection 与 source plugin，再重算 ``record_id``。
     """
     path = Path(export_path)
-    parsed = parse_journal_archive(path)
+    limit = (
+        get_settings().journal_max_decompressed_bytes
+        if max_decompressed_bytes is None
+        else max_decompressed_bytes
+    )
+    try:
+        parsed = parse_journal_archive(path, max_decompressed_bytes=limit)
+    except JournalDecompressedLimitError as error:
+        raise BootrecPackagingError(
+            f"{error.name} 超过上限：已占用 {error.used} 字节，上限 {error.limit} 字节"
+            f"（{error.what}）。请调大部署配置 {DEPLOYMENT_MAX_BYTES_ENV}"
+            f"（当前值 {limit} 字节），或先按时间范围拆分导出再打包"
+        ) from error
     bundle = build_bundle(parsed, source_sha256=archive_digest(path))
     resolved_machine = machine_id or bundle.collection.machine_id
     resolved_boot = boot_id or bundle.collection.boot_id

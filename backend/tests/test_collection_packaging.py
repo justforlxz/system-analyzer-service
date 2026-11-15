@@ -25,6 +25,7 @@ from system_analyzer.collection.packaging import (
     collect_journal,
     packaging_input_from_journal,
 )
+from system_analyzer.core.config import get_settings
 from system_analyzer.domain.bootrec import (
     BootEntity,
     CollectionMode,
@@ -278,6 +279,33 @@ def test_journal_export_does_not_duplicate_records_already_collected(tmp_path: P
     ]
     assert len(events) == len(journal.records)
     assert result.journal_entry_count == 2
+
+
+def test_collect_journal_uses_the_deployment_limit_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Post 阶段重新解析导出时必须使用部署配置，而不是固定的 512 MiB 默认值。"""
+    export = tmp_path / "journal.export"
+    export.write_text(
+        OOM_EXPORT + "__CURSOR=s=abc;i=3\n"
+        "__REALTIME_TIMESTAMP=1794009601400000\n"
+        "__MONOTONIC_TIMESTAMP=1400000\n"
+        "_BOOT_ID=3f1c9a52-8f0e-4a10-9b1c-2b7d5c3a6e11\n"
+        "_HOSTNAME=uos-PC\n"
+        f"MESSAGE={'M' * 20_000}\n\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SAS_JOURNAL_MAX_DECOMPRESSED_BYTES", "4096")
+    get_settings.cache_clear()
+
+    with pytest.raises(BootrecPackagingError, match="SAS_JOURNAL_MAX_DECOMPRESSED_BYTES"):
+        collect_journal(export, collection=collection())
+
+    monkeypatch.setenv("SAS_JOURNAL_MAX_DECOMPRESSED_BYTES", "100000")
+    get_settings.cache_clear()
+    journal = collect_journal(export, collection=collection())
+
+    assert len(journal.entries) == 3
 
 
 def test_missing_whole_resource_stream_set_still_packs(tmp_path: Path) -> None:

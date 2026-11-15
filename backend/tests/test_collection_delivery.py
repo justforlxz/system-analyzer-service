@@ -19,7 +19,7 @@ from collection_fakes import FakeConnector
 from system_analyzer.collection import delivery
 from system_analyzer.collection.context import PhaseContext
 from system_analyzer.collection.orchestrator import CollectionOutcome, run_collection
-from system_analyzer.collection.packaging import PackagingInput
+from system_analyzer.collection.packaging import BootrecPackagingError, PackagingInput
 from system_analyzer.collection.plan import (
     CollectionStep,
     PhasePlan,
@@ -27,6 +27,7 @@ from system_analyzer.collection.plan import (
     gather_collected_data,
 )
 from system_analyzer.collection.states import AttemptStatus, CollectionPhase, PhaseStatus
+from system_analyzer.core.config import get_settings
 from system_analyzer.domain.bootrec import (
     BootEntity,
     CollectionMode,
@@ -519,6 +520,42 @@ async def test_load_source_without_sampling_still_returns_none(
     ctx = _source_context(tmp_path, records_file=None)
 
     assert await delivery._load_source(ctx) is None
+
+
+async def test_load_source_uses_the_configured_journal_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Post 阶段「收集数据」必须和采样阶段使用同一个部署配置上限。"""
+    _patch_empty_store(monkeypatch)
+    export = tmp_path / "journal-run-journal.export"
+    export.write_text(
+        "__CURSOR=s=abc;i=1\n"
+        "__REALTIME_TIMESTAMP=1794009601200000\n"
+        "__MONOTONIC_TIMESTAMP=1200000\n"
+        f"_BOOT_ID={BOOT_ID.replace('-', '')}\n"
+        "_HOSTNAME=uos-152\n"
+        f"MESSAGE={'M' * 20_000}\n\n",
+        encoding="utf-8",
+    )
+    ctx = _source_context(tmp_path, records_file=None)
+    ctx.data["journal"] = {
+        "export_file": str(export),
+        "entities_file": None,
+        "work_dir": str(tmp_path),
+    }
+
+    monkeypatch.setenv("SAS_JOURNAL_MAX_DECOMPRESSED_BYTES", "4096")
+    get_settings.cache_clear()
+    with pytest.raises(BootrecPackagingError, match="SAS_JOURNAL_MAX_DECOMPRESSED_BYTES"):
+        await delivery._load_source(ctx)
+
+    monkeypatch.setenv("SAS_JOURNAL_MAX_DECOMPRESSED_BYTES", "100000")
+    get_settings.cache_clear()
+    source = await delivery._load_source(ctx)
+
+    assert isinstance(source, PackagingInput)
+    assert source.journal is not None
+    assert len(source.journal.entries) == 1
 
 
 async def test_already_imported_collection_cleans_remote_without_repacking(

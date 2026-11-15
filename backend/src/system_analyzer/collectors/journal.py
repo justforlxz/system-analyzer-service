@@ -42,11 +42,14 @@ from system_analyzer.domain.bootrec import (
 )
 from system_analyzer.domain.time_base import normalize_boot_id
 from system_analyzer.importers.journal_archive import (
+    CONFIG_MAX_BYTES,
     DEFAULT_MAX_DECOMPRESSED_BYTES,
     JournalBundle,
+    JournalDecompressedLimitError,
     archive_digest,
     build_bundle,
     parse_journal_archive,
+    resolve_max_decompressed_bytes,
 )
 from system_analyzer.plugins.contracts import (
     PLUGIN_API_VERSION,
@@ -83,6 +86,9 @@ OPTION_UNTIL = "until"
 OPTION_WORK_DIR = "work_dir"
 OPTION_REMOTE_TMP_DIR = "remote_tmp_dir"
 OPTION_COMMAND_TIMEOUT_SECONDS = "command_timeout_seconds"
+
+DEPLOYMENT_MAX_BYTES_ENV = "SAS_JOURNAL_MAX_DECOMPRESSED_BYTES"
+"""部署配置里调整解压上限的环境变量名；只用于错误信息，插件自己不读环境变量。"""
 
 
 class JournalRemote(Protocol):
@@ -133,6 +139,20 @@ class JournalCollector(PluginBase):
         version="1.0.0",
         api_version=PLUGIN_API_VERSION,
         capabilities=(CAPABILITY,),
+        config_schema={
+            "type": "object",
+            "properties": {
+                CONFIG_MAX_BYTES: {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": (
+                        "允许解析的解压后最大字节数；不填时用默认值 "
+                        f"{DEFAULT_MAX_DECOMPRESSED_BYTES}（512 MiB）"
+                    ),
+                }
+            },
+            "additionalProperties": False,
+        },
     )
 
     def __init__(self, remote_factory: RemoteFactory | None = None) -> None:
@@ -142,6 +162,7 @@ class JournalCollector(PluginBase):
         """采集一次 Journal：读 boot id、按游标导出、解析、追加记录并留下游标。"""
         options = request.options
         collection_id = _required_text(options, OPTION_COLLECTION_ID)
+        max_decompressed_bytes = resolve_max_decompressed_bytes(context.config)
         after_cursor = _optional_text(options, OPTION_AFTER_CURSOR)
         since = _optional_text(options, OPTION_SINCE)
         until = _optional_text(options, OPTION_UNTIL)
@@ -182,7 +203,11 @@ class JournalCollector(PluginBase):
         finally:
             _remove_remote_dir(remote, target_id, remote_dir, timeout=timeout)
 
-        bundle, cursor = _read_bundle(local_export, boot_id=boot_id)
+        bundle, cursor = _read_bundle(
+            local_export,
+            boot_id=boot_id,
+            max_decompressed_bytes=max_decompressed_bytes,
+        )
         if cursor is None:
             cursor = after_cursor
         resolved_machine_id = _optional_text(options, OPTION_MACHINE_ID) or (
@@ -330,14 +355,27 @@ def _remove_remote_dir(
         logger.warning("删除目标机器上的临时目录 %s 失败", remote_dir, exc_info=True)
 
 
-def _read_bundle(local_export: Path, *, boot_id: str) -> tuple[JournalBundle | None, str | None]:
+def _read_bundle(
+    local_export: Path,
+    *,
+    boot_id: str,
+    max_decompressed_bytes: int = DEFAULT_MAX_DECOMPRESSED_BYTES,
+) -> tuple[JournalBundle | None, str | None]:
     """解析导出文件，返回（1.4 的采集结果、最后游标）。空导出返回 ``(None, None)``。"""
     if not local_export.exists() or local_export.stat().st_size == 0:
         return None, None
-    parsed = parse_journal_archive(
-        local_export,
-        max_decompressed_bytes=DEFAULT_MAX_DECOMPRESSED_BYTES,
-    )
+    try:
+        parsed = parse_journal_archive(
+            local_export,
+            max_decompressed_bytes=max_decompressed_bytes,
+        )
+    except JournalDecompressedLimitError as error:
+        raise PluginInputError(
+            f"{error.name} 超过上限：已占用 {error.used} 字节，上限 {error.limit} 字节"
+            f"（{error.what}）。远程采集的上限来自部署配置 {DEPLOYMENT_MAX_BYTES_ENV}"
+            f"（当前值 {max_decompressed_bytes} 字节）；调大后请重启 Worker，"
+            "或先按时间范围拆分导出再打包"
+        ) from error
     if not parsed.entries:
         return None, None
     last = parsed.entries[-1]

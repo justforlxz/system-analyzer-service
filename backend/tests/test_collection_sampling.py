@@ -25,6 +25,7 @@ from collection_fakes import (
 from system_analyzer.collection import sampling
 from system_analyzer.collection.context import PhaseContext
 from system_analyzer.core.config import get_settings
+from system_analyzer.importers.journal_archive import CONFIG_MAX_BYTES
 from system_analyzer.plugins.registry import PluginNotRegisteredError, PluginRegistry
 
 TARGET = "uos-152"
@@ -103,6 +104,7 @@ async def test_collect_continuously_records_resources_and_journal(
     assert resources.configs[0] == {"database_url": database_url}
     assert journal.requests[0].options["collection_id"] == COLLECTION_ID
     assert journal.requests[0].options["database_url"] == database_url
+    assert journal.configs[0] == {CONFIG_MAX_BYTES: get_settings().journal_max_decompressed_bytes}
 
     export = Path(ctx.data["journal"]["export_file"])
     assert export.is_file()  # noqa: ASYNC240  测试断言
@@ -123,6 +125,24 @@ async def test_collect_continuously_is_skipped_without_delivery(
     assert ctx.data["sampling"]["status"] == "skipped"
     assert resources.requests == []
     assert journal.requests == []
+
+
+async def test_journal_limit_comes_from_the_deployment_setting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_plugins: tuple[PluginRegistry, FakeResourceCollector, FakeJournalCollector],
+) -> None:
+    """部署方只改环境变量就能调整 Journal 解压上限，不用改代码。"""
+    expected = 2 * 1024 * 1024 * 1024
+    monkeypatch.setenv("SAS_JOURNAL_MAX_DECOMPRESSED_BYTES", str(expected))
+    get_settings.cache_clear()
+    _registry, _resources, journal = fake_plugins
+    ctx = make_context(tmp_path)
+
+    await sampling.start_sampling(ctx)
+    await sampling.collect_continuously(ctx)
+
+    assert journal.configs[0] == {CONFIG_MAX_BYTES: expected}
 
 
 async def test_collect_continuously_accepts_a_relative_scratch_dir(
