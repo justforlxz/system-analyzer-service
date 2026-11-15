@@ -53,6 +53,7 @@ scripts/dev-db.sh start    # 创建 sas-postgres 容器
 | `SAS_WORKER_POLL_INTERVAL_SECONDS` | 否 | 队列空闲时的轮询间隔，默认 2 秒 |
 | `SAS_WORKER_LOCK_TIMEOUT_SECONDS` | 否 | 任务锁超时，默认 900 秒 |
 | `SAS_MAX_UPLOAD_BYTES` | 否 | 单文件上传上限，默认 512 MiB |
+| `SAS_JOURNAL_MAX_DECOMPRESSED_BYTES` | 否 | 远程 Journal 采集允许解析的解压后上限，默认 512 MiB；调大后 Worker 内存峰值同步升高 |
 
 前端只需要一个变量，且在构建时读取：
 

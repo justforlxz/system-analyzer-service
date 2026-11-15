@@ -56,6 +56,11 @@ zstd 压缩的外层容器与 zstd / lz4 压缩的字段**不支持**：仓库�
 {"max_decompressed_bytes": 2147483648}
 ```
 
+远程采集（插件 `journal.remote`）使用同一个解析器与同一个配置键；它的值来自部署配置
+`SAS_JOURNAL_MAX_DECOMPRESSED_BYTES`（默认 512 MiB），由 Core 作为插件配置
+`max_decompressed_bytes` 传入。调大上限会同步提高 Worker 的内存峰值，按时间范围拆分的方法见
+`docs/collection-orchestration.md` 的「Journal 解压上限」。
+
 `config_schema` 会先按 JSON Schema 校验这个值（必须是正整数）；直接构造 `PluginContext` 的调用路径
 （测试、将来的 Worker 接线）不过 Core 的校验，插件自己也会挡住非正整数。
 

@@ -64,6 +64,14 @@ class Settings(BaseSettings):
             "默认 512 MiB，与 Journal 归档解压前的体积上限一致"
         ),
     )
+    journal_max_decompressed_bytes: int = Field(
+        default=512 * 1024 * 1024,
+        gt=0,
+        description=(
+            "远程 Journal 采集允许解析的解压后最大字节数。默认 512 MiB；"
+            "调大后 Worker 解析 Journal 时的内存峰值会随之提高"
+        ),
+    )
 
 
 @lru_cache

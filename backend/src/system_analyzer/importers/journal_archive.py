@@ -170,6 +170,30 @@ Journal 归档压缩比可以很高（仓库里的样例 `boot.journal.gz` 只�
 CONFIG_MAX_BYTES = "max_decompressed_bytes"
 """插件配置里调整上面那个上限的键。"""
 
+
+class JournalDecompressedLimitError(PluginInputError):
+    """解压后体积超过上限。调用方可以按类型补充自己的配置提示，不依赖错误文案。"""
+
+    def __init__(self, *, name: str, used: int, limit: int, what: str) -> None:
+        super().__init__(
+            f"{name} 超过上限：已占用 {used} 字节，上限 {limit} 字节"
+            f"（{what}）。请调大插件配置 {CONFIG_MAX_BYTES}，"
+            "或先按时间范围拆分导出再打包"
+        )
+        self.name = name
+        self.used = used
+        self.limit = limit
+        self.what = what
+
+
+def resolve_max_decompressed_bytes(config: Mapping[str, Any]) -> int:
+    """从插件配置取解压上限；没有配置时用默认值，非法值指出配置键。"""
+    value = config.get(CONFIG_MAX_BYTES, DEFAULT_MAX_DECOMPRESSED_BYTES)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise PluginInputError(f"插件配置 {CONFIG_MAX_BYTES} 必须是正整数，实际是 {value!r}")
+    return value
+
+
 ENTRY_MEMORY_ESTIMATE_BYTES = 6144
 """每条事件在内存里大约占多少字节，用来把「条数」折算进同一个体积预算。
 
@@ -388,10 +412,11 @@ class _ByteBudget:
     def take(self, count: int, *, name: str, what: str) -> None:
         self.used += count
         if self.used > self.limit:
-            raise PluginInputError(
-                f"{name} 超过上限：已占用 {self.used} 字节，上限 {self.limit} 字节"
-                f"（{what}）。请调大插件配置 {CONFIG_MAX_BYTES}，"
-                "或先按时间范围拆分导出再打包"
+            raise JournalDecompressedLimitError(
+                name=name,
+                used=self.used,
+                limit=self.limit,
+                what=what,
             )
 
 
@@ -1086,6 +1111,7 @@ __all__ = [
     "PLUGIN_ID",
     "JournalArchiveSummary",
     "JournalBundle",
+    "JournalDecompressedLimitError",
     "ParsedJournal",
     "archive_digest",
     "build_bundle",
@@ -1093,5 +1119,6 @@ __all__ = [
     "iter_export_events",
     "parse_journal_archive",
     "parse_native",
+    "resolve_max_decompressed_bytes",
     "summarise",
 ]

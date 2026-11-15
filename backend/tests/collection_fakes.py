@@ -557,13 +557,20 @@ class FakeJournalCollector(PluginBase):
         version="1.0.0",
         api_version=PLUGIN_API_VERSION,
         capabilities=("journal.remote",),
+        config_schema={
+            "type": "object",
+            "properties": {"max_decompressed_bytes": {"type": "integer", "minimum": 1}},
+            "additionalProperties": False,
+        },
     )
 
     def __init__(self) -> None:
         self.requests: list[CollectRequest] = []
+        self.configs: list[dict[str, Any]] = []
 
     def collect(self, request: CollectRequest, context: PluginContext) -> CollectResult:
         self.requests.append(request)
+        self.configs.append(dict(context.config))
         work_dir = Path(request.options["work_dir"])
         work_dir.mkdir(parents=True, exist_ok=True)
         export = work_dir / f"journal-{request.run_id}.export"

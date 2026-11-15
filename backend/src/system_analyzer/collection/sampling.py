@@ -32,6 +32,7 @@ from system_analyzer.collectors.resources import DEFAULT_WINDOW_SECONDS
 from system_analyzer.collectors.resources import PLUGIN_ID as RESOURCE_PLUGIN_ID
 from system_analyzer.core.config import get_settings
 from system_analyzer.domain.time_base import normalize_boot_id
+from system_analyzer.importers.journal_archive import CONFIG_MAX_BYTES
 from system_analyzer.plugins.contracts import (
     CollectRequest,
     CollectResult,
@@ -238,7 +239,9 @@ def _collect_journal(
             context,
         ),
         data=recorder,
-        config={},
+        config={
+            CONFIG_MAX_BYTES: get_settings().journal_max_decompressed_bytes,
+        },
         run_id=ctx.run_id,
     )
     return _journal_record(work_dir, result.artifacts), result
