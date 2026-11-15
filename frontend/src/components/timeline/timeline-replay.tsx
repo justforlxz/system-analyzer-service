@@ -71,6 +71,24 @@ function axisOf(tracks: TracksResponse): WindowRange | null {
   return { startNs: tracks.axis_start_ns, endNs: tracks.axis_end_ns };
 }
 
+/** 服务实体的轨道名可以打开诊断页，把实体与当前游标一起带过去。 */
+function trackDiagnosticsHref(
+  track: TrackResponse,
+  machineId: string,
+  bootId: string,
+  atNs: number | null,
+): string | null {
+  const entity = track.entity;
+  if (!entity?.startsWith("service:")) return null;
+  const params = [
+    `machine_id=${encodeURIComponent(machineId)}`,
+    `boot_id=${encodeURIComponent(bootId)}`,
+    `entity=${encodeURIComponent(entity)}`,
+  ];
+  if (atNs !== null) params.push(`at_ns=${atNs}`);
+  return `/diagnostics?${params.join("&")}`;
+}
+
 type TrackSlices = { spans: SpanItem[]; events: EventItem[]; metrics: MetricItem[] };
 
 /** 按轨道把条目切成三类。轨道数据不变时只算一次，避免每次渲染都对每条轨道重跑三遍过滤。 */
@@ -536,6 +554,13 @@ export function TimelineReplay({
                   metrics: points,
                 } = trackItems.get(track.track_id) ?? { spans: [], events: [], metrics: [] };
                 const openSpans = spans.filter(isOpenSpan);
+                const label = trackLabel(track);
+                const diagnosticsHref = trackDiagnosticsHref(
+                  track,
+                  machine.machine_id,
+                  bootId,
+                  cursorPosition,
+                );
                 return (
                   <div
                     key={track.track_id}
@@ -547,12 +572,24 @@ export function TimelineReplay({
                       className="shrink-0 border-r border-slate-100 px-3 py-2"
                       style={{ width: TRACK_LABEL_WIDTH }}
                     >
-                      <div
-                        className="truncate text-xs font-medium text-slate-800"
-                        title={track.track_id}
-                      >
-                        {trackLabel(track)}
-                      </div>
+                      {diagnosticsHref === null ? (
+                        <div
+                          className="truncate text-xs font-medium text-slate-800"
+                          title={track.track_id}
+                        >
+                          {label}
+                        </div>
+                      ) : (
+                        <Link
+                          className="block truncate text-xs font-medium text-slate-800 underline decoration-slate-300 underline-offset-2 hover:text-slate-900 hover:decoration-slate-500"
+                          href={diagnosticsHref}
+                          title={track.track_id}
+                          data-testid="track-label-link"
+                          data-track-id={track.track_id}
+                        >
+                          {label}
+                        </Link>
+                      )}
                       <div className="truncate text-[11px] text-slate-500">
                         {trackSourceLabel(track)}
                       </div>
