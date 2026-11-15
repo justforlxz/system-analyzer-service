@@ -1,6 +1,6 @@
 import type { SpanItem } from "@/lib/api/client";
 import type { WindowRange } from "@/lib/timeline/scale";
-import { clipSpan, spanEndLabel } from "@/lib/timeline/tracks";
+import { clipSpan, spanEndLabel, timelineItemKey } from "@/lib/timeline/tracks";
 
 const VIEW_WIDTH = 1000;
 const VIEW_HEIGHT = 28;
@@ -22,10 +22,14 @@ function fillFor(span: SpanItem): string {
 export function SpanTrack({
   spans,
   range,
+  selectedKey,
+  onSelect,
   testId,
 }: {
   spans: SpanItem[];
   range: WindowRange;
+  selectedKey: string | null;
+  onSelect: (span: SpanItem) => void;
   testId?: string;
 }) {
   const bars = spans
@@ -58,8 +62,10 @@ export function SpanTrack({
         const width = Math.max((clip.endFraction - clip.startFraction) * VIEW_WIDTH, 2);
         const endX = x + width;
         const note = spanEndLabel(span);
+        const key = timelineItemKey(span);
+        const selected = key === selectedKey;
         return (
-          <g key={`${span.record_id}-${index}`}>
+          <g key={`${span.record_id}-${index}`} data-selection-key={key}>
             <rect
               x={x}
               y={BAR_TOP}
@@ -68,6 +74,21 @@ export function SpanTrack({
               rx={2}
               fill={fillFor(span)}
               opacity={0.85}
+              stroke={selected ? "#0f172a" : undefined}
+              strokeWidth={selected ? 2 : undefined}
+              vectorEffect="non-scaling-stroke"
+              data-testid="span-bar"
+              data-record-id={span.record_id}
+              data-selected={selected ? "true" : "false"}
+              tabIndex={0}
+              role="button"
+              aria-label={`区间 ${span.span_type}${span.state === null ? "" : `，${span.state}`}`}
+              className="cursor-pointer"
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                onSelect(span);
+              }}
             >
               <title>{[span.span_type, span.state, note].filter(Boolean).join(" · ")}</title>
             </rect>

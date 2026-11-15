@@ -81,6 +81,12 @@ function renderTimeline(
   );
 }
 
+/** 模拟一次完整的按下与抬起：轨道上画出的条目靠这对事件区分「点选」与「拖动」。 */
+function pressItem(element: HTMLElement) {
+  fireEvent.pointerDown(element, { pointerId: 9, clientX: 120 });
+  fireEvent.pointerUp(element, { pointerId: 9, clientX: 120 });
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -326,6 +332,148 @@ describe("TimelineReplay", () => {
       const cursorCall = calls.find((call) => call.path.endsWith("/timeline/cursor"));
       expect(cursorCall?.url.searchParams.get("at_ns")).toBe("2000000000");
     });
+  });
+
+  it("点事件刻度：选中该事件、显示详情，游标用事件自己的 monotonic_ns", async () => {
+    const event = makeEvent({
+      record_id: "event-picked",
+      monotonic_ns: 2_500_000_000,
+    });
+    const tracks = makeTracksResponse({
+      tracks: [makeEventTrack({ items: [event] })],
+      items: [event],
+    });
+    const { calls } = stubApi({
+      tracks: () => tracks,
+      cursor: (url) => makeCursor({ position_ns: Number(url.searchParams.get("at_ns")) }),
+    });
+    renderTimeline(tracks);
+
+    const mark = screen.getByTestId("event-mark");
+    expect(mark).toHaveAttribute("data-record-id", "event-picked");
+    pressItem(mark);
+
+    const panel = screen.getByTestId("selection-detail");
+    expect(panel).toHaveTextContent("选中：事件");
+    expect(screen.getByTestId("detail-event-type")).toHaveTextContent("systemd.unit.started");
+    expect(screen.getByTestId("detail-severity")).toHaveTextContent("info");
+    expect(screen.getByTestId("detail-message")).toHaveTextContent("Started nginx.service");
+    expect(screen.getByTestId("detail-entity")).toHaveTextContent("service:nginx.service");
+    expect(screen.getByTestId("detail-record-id")).toHaveTextContent("event-picked");
+    expect(screen.getByTestId("detail-collection-id")).toHaveTextContent("collection:one");
+    expect(screen.getByTestId("detail-monotonic-ns")).toHaveTextContent("2500000000");
+    expect(screen.getByTestId("detail-realtime-ns")).toHaveTextContent("UTC");
+    expect(mark).toHaveAttribute("data-selected", "true");
+
+    await waitFor(() => {
+      const cursorCall = calls.find((call) => call.path.endsWith("/timeline/cursor"));
+      expect(cursorCall?.url.searchParams.get("at_ns")).toBe("2500000000");
+    });
+  });
+
+  it("点区间条：详情含类型、状态与起止时刻，游标定位到区间起点", async () => {
+    const span = makeSpan({
+      record_id: "span-picked",
+      monotonic_ns: 3_000_000_000,
+      end_monotonic_ns: 5_000_000_000,
+      span_type: "service.active",
+      state: "active",
+    });
+    const tracks = makeTracksResponse({
+      tracks: [makeSpanTrack({ items: [span] })],
+      items: [span],
+    });
+    const { calls } = stubApi({
+      tracks: () => tracks,
+      cursor: (url) => makeCursor({ position_ns: Number(url.searchParams.get("at_ns")) }),
+    });
+    renderTimeline(tracks);
+
+    const bar = screen.getByTestId("span-bar");
+    pressItem(bar);
+
+    expect(screen.getByTestId("selection-detail")).toHaveTextContent("选中：生命周期区间");
+    expect(screen.getByTestId("detail-span-type")).toHaveTextContent("service.active");
+    expect(screen.getByTestId("detail-state")).toHaveTextContent("active");
+    expect(screen.getByTestId("detail-start")).toHaveTextContent("T+3.000 s");
+    expect(screen.getByTestId("detail-start")).toHaveTextContent("3000000000");
+    expect(screen.getByTestId("detail-end")).toHaveTextContent("T+5.000 s");
+    expect(screen.getByTestId("detail-end")).toHaveTextContent("5000000000");
+    expect(screen.getByTestId("detail-duration")).toHaveTextContent("2.000 s");
+    expect(screen.getByTestId("detail-record-id")).toHaveTextContent("span-picked");
+    expect(bar).toHaveAttribute("data-selected", "true");
+
+    await waitFor(() => {
+      const cursorCall = calls.find((call) => call.path.endsWith("/timeline/cursor"));
+      expect(cursorCall?.url.searchParams.get("at_ns")).toBe("3000000000");
+    });
+  });
+
+  it("选中未闭合区间：详情写未闭合，不把后端补的窗口边缘当成结束时刻", async () => {
+    const span = makeSpan({
+      record_id: "span-open",
+      monotonic_ns: 3_000_000_000,
+      end_monotonic_ns: 9_000_000_000,
+      end_is_declared: false,
+      closed_by: "collection:one",
+    });
+    const tracks = makeTracksResponse({
+      tracks: [makeSpanTrack({ items: [span] })],
+      items: [span],
+    });
+    stubApi({ tracks: () => tracks });
+    renderTimeline(tracks);
+
+    pressItem(screen.getByTestId("span-bar"));
+
+    expect(screen.getByTestId("detail-end")).toHaveTextContent("未闭合：采集结束时仍在进行");
+    expect(screen.getByTestId("detail-end")).not.toHaveTextContent("9000000000");
+    expect(screen.getByTestId("detail-duration")).toHaveTextContent("未知");
+  });
+
+  it("点没有 monotonic_ns 的事件：显示详情、游标不动、不请求游标", async () => {
+    const event = makeEvent({
+      record_id: "event-no-clock",
+      monotonic_ns: null,
+      realtime_ns: null,
+    });
+    const tracks = makeTracksResponse({
+      tracks: [makeEventTrack({ items: [event] })],
+      items: [event],
+    });
+    const { calls } = stubApi({ tracks: () => tracks });
+    renderTimeline(tracks);
+
+    expect(screen.queryByTestId("event-mark")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("event-jump"));
+
+    expect(screen.getByTestId("selection-detail")).toHaveTextContent("选中：事件");
+    expect(screen.getByTestId("detail-monotonic-ns")).toHaveTextContent("无（不在 boot 时间轴上）");
+    expect(screen.getByTestId("detail-realtime-ns")).toHaveTextContent("无");
+    expect(screen.getByTestId("cursor-position-exact")).toHaveTextContent("2000000000");
+    expect(calls.filter((call) => call.path.endsWith("/timeline/cursor"))).toHaveLength(0);
+  });
+
+  it("选中第二条替换第一条；点轨道空白处清除选中", async () => {
+    stubApi({});
+    renderTimeline();
+
+    const eventMark = screen.getByTestId("event-mark");
+    pressItem(eventMark);
+    expect(screen.getByTestId("selection-detail")).toHaveTextContent("选中：事件");
+    expect(eventMark).toHaveAttribute("data-selected", "true");
+
+    const spanBar = screen.getByTestId("span-bar");
+    pressItem(spanBar);
+    expect(screen.getByTestId("selection-detail")).toHaveTextContent("选中：生命周期区间");
+    expect(eventMark).toHaveAttribute("data-selected", "false");
+    expect(spanBar).toHaveAttribute("data-selected", "true");
+
+    const plot = screen.getAllByTestId("track-plot")[0];
+    fireEvent.pointerDown(plot, { pointerId: 11, clientX: 40 });
+    fireEvent.pointerUp(plot, { pointerId: 11, clientX: 40 });
+    expect(screen.queryByTestId("selection-detail")).not.toBeInTheDocument();
+    expect(spanBar).toHaveAttribute("data-selected", "false");
   });
 
   it("无数据的轨道显示「无数据」占位，不可用的轨道显示原因，都不画 0", async () => {
