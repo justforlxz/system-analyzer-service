@@ -132,6 +132,90 @@ test.describe("统一时间线回放", () => {
     await expectCursorAligned(page, times[1], axis);
   });
 
+  test("缩放后的窗口写入地址栏，新标签页与刷新都复现同一窗口和游标", async ({ page, context }) => {
+    const tracks = fixture<FixtureTracks>("full-tracks");
+    const times = stopTimesOf(tracks);
+    const axis = axisOf(tracks);
+    await page.goto(timelineUrl(BOOT.full));
+    await expect(page.getByTestId("timeline-replay")).toBeVisible();
+
+    await page.getByTestId("cursor-next").click();
+    await expect(page.getByTestId("cursor-position-exact")).toHaveText(String(times[1]));
+
+    let documentRequests = 0;
+    page.on("request", (request) => {
+      if (request.resourceType() === "document") documentRequests += 1;
+    });
+
+    const firstZoom = zoomWindow(axis, 0.5, times[1], axis);
+    await page.getByTestId("zoom-in").click();
+    await expect(page.getByTestId("window-range-exact")).toHaveText(
+      `${firstZoom.startNs} → ${firstZoom.endNs}`,
+    );
+    const secondZoom = zoomWindow(firstZoom, 0.5, times[1], axis);
+    await page.getByTestId("zoom-in").click();
+    await expect(page.getByTestId("window-range-exact")).toHaveText(
+      `${secondZoom.startNs} → ${secondZoom.endNs}`,
+    );
+
+    await expect(page).toHaveURL(new RegExp(`window_start_ns=${secondZoom.startNs}`));
+    await expect(page).toHaveURL(new RegExp(`window_end_ns=${secondZoom.endNs}`));
+    await expect(page).toHaveURL(new RegExp(`at_ns=${times[1]}(&|$)`));
+    // 写地址栏只做浅层更新：期间没有文档请求，导航条目仍然只有首次打开这一条
+    expect(documentRequests).toBe(0);
+    expect(await page.evaluate(() => performance.getEntriesByType("navigation").length)).toBe(1);
+
+    const sharedUrl = page.url();
+    const other = await context.newPage();
+    await other.goto(sharedUrl);
+    await expect(other.getByTestId("window-range-exact")).toHaveText(
+      `${secondZoom.startNs} → ${secondZoom.endNs}`,
+    );
+    await expect(other.getByTestId("cursor-position-exact")).toHaveText(String(times[1]));
+
+    await page.reload();
+    await expect(page.getByTestId("window-range-exact")).toHaveText(
+      `${secondZoom.startNs} → ${secondZoom.endNs}`,
+    );
+    await expect(page.getByTestId("cursor-position-exact")).toHaveText(String(times[1]));
+  });
+
+  test("带合法窗口参数打开时直接使用该窗口，不按 at_ns 重算", async ({ page }) => {
+    const startNs = 2_000_000_000;
+    const endNs = 3_000_000_000;
+    await page.goto(
+      `${timelineUrl(BOOT.full)}&at_ns=5000000000&window_start_ns=${startNs}&window_end_ns=${endNs}`,
+    );
+
+    await expect(page.getByTestId("timeline-replay")).toBeVisible();
+    await expect(page.getByTestId("window-range-exact")).toHaveText(`${startNs} → ${endNs}`);
+    // 游标按 at_ns 停住；即使它不在窗口里，也不为了包含它而改写窗口
+    await expect(page.getByTestId("cursor-position-exact")).toHaveText("5000000000");
+    await expect(page.getByText(/游标在窗口之外/)).toBeVisible();
+  });
+
+  test("非法窗口参数回落到默认窗口，页面照常打开", async ({ page }) => {
+    const tracks = fixture<FixtureTracks>("full-tracks");
+    const times = stopTimesOf(tracks);
+    const axis = axisOf(tracks);
+
+    for (const query of [
+      "window_start_ns=8500000001&window_end_ns=8600000000",
+      "window_start_ns=5000000000&window_end_ns=4000000000",
+      "window_start_ns=-1&window_end_ns=4000000000",
+      "window_start_ns=abc&window_end_ns=4000000000",
+    ]) {
+      await page.goto(`${timelineUrl(BOOT.full)}&${query}`);
+
+      await expect(page.getByTestId("timeline-replay")).toBeVisible();
+      await expect(page.getByText("无法读取这次启动的时间线")).toHaveCount(0);
+      await expect(page.getByTestId("window-range-exact")).toHaveText(
+        `${axis.startNs} → ${axis.endNs}`,
+      );
+      await expect(page.getByTestId("cursor-position-exact")).toHaveText(String(times[0]));
+    }
+  });
+
   test("拖动轨道平移窗口，窗口起点按拖动距离变化", async ({ page }) => {
     const tracks = fixture<FixtureTracks>("full-tracks");
     const times = stopTimesOf(tracks);

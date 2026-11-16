@@ -635,6 +635,130 @@ describe("TimelineReplay", () => {
     );
   });
 
+  it("连续点两次「放大」后，地址栏窗口等于轨道上的窗口，at_ns 不变", async () => {
+    stubApi({
+      tracks: (url) => {
+        const startNs = Number(url.searchParams.get("start_ns"));
+        const endNs = Number(url.searchParams.get("end_ns"));
+        return makeTracksResponse({ window_start_ns: startNs, window_end_ns: endNs });
+      },
+    });
+    renderTimeline();
+    await waitFor(() => expect(searchParams().get("at_ns")).toBe("2000000000"));
+    const axis = { startNs: AXIS_START, endNs: AXIS_END };
+
+    await userEvent.click(screen.getByTestId("zoom-in"));
+    const firstZoom = zoomWindow(axis, 0.5, 2_000_000_000, axis);
+    await waitFor(() =>
+      expect(screen.getByTestId("window-range-exact")).toHaveTextContent(
+        `${firstZoom.startNs} → ${firstZoom.endNs}`,
+      ),
+    );
+
+    await userEvent.click(screen.getByTestId("zoom-in"));
+    const secondZoom = zoomWindow(firstZoom, 0.5, 2_000_000_000, axis);
+    await waitFor(() =>
+      expect(screen.getByTestId("window-range-exact")).toHaveTextContent(
+        `${secondZoom.startNs} → ${secondZoom.endNs}`,
+      ),
+    );
+    await waitFor(() =>
+      expect(searchParams().get("window_start_ns")).toBe(String(secondZoom.startNs)),
+    );
+    expect(searchParams().get("window_end_ns")).toBe(String(secondZoom.endNs));
+    expect(searchParams().get("at_ns")).toBe("2000000000");
+  });
+
+  it("平移后点「全览」，地址栏窗口回到整条轴，at_ns 仍在", async () => {
+    stubApi({
+      tracks: (url) => {
+        const startNs = Number(url.searchParams.get("start_ns"));
+        const endNs = Number(url.searchParams.get("end_ns"));
+        return makeTracksResponse({ window_start_ns: startNs, window_end_ns: endNs });
+      },
+    });
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 800,
+      height: 40,
+      top: 0,
+      left: 0,
+      right: 800,
+      bottom: 40,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    renderTimeline();
+    await waitFor(() => expect(searchParams().get("at_ns")).toBe("2000000000"));
+    const axis = { startNs: AXIS_START, endNs: AXIS_END };
+
+    await userEvent.click(screen.getByTestId("zoom-in"));
+    const zoomed = zoomWindow(axis, 0.5, 2_000_000_000, axis);
+    await waitFor(() =>
+      expect(screen.getByTestId("window-range-exact")).toHaveTextContent(
+        `${zoomed.startNs} → ${zoomed.endNs}`,
+      ),
+    );
+
+    const plot = screen.getAllByTestId("track-plot")[0];
+    fireEvent.pointerDown(plot, { pointerId: 31, clientX: 400 });
+    fireEvent.pointerMove(plot, { pointerId: 31, clientX: 200 });
+    fireEvent.pointerUp(plot, { pointerId: 31, clientX: 200 });
+    const panned = panWindow(zoomed, (200 / 800) * (zoomed.endNs - zoomed.startNs), axis);
+    await waitFor(() =>
+      expect(screen.getByTestId("window-range-exact")).toHaveTextContent(
+        `${panned.startNs} → ${panned.endNs}`,
+      ),
+    );
+    await waitFor(() => expect(searchParams().get("window_start_ns")).toBe(String(panned.startNs)));
+
+    await userEvent.click(screen.getByTestId("zoom-reset"));
+    await waitFor(() =>
+      expect(screen.getByTestId("window-range-exact")).toHaveTextContent(
+        `${AXIS_START} → ${AXIS_END}`,
+      ),
+    );
+    await waitFor(() => expect(searchParams().get("window_start_ns")).toBe(String(AXIS_START)));
+    expect(searchParams().get("window_end_ns")).toBe(String(AXIS_END));
+    expect(searchParams().get("at_ns")).toBe("2000000000");
+  });
+
+  it("地址栏带合法窗口时，初始窗口直接用这组值，不按 at_ns 重算", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/timeline?machine_id=machine%3Auos-PC&boot_id=boot-1&at_ns=2000000000&window_start_ns=3000000000&window_end_ns=4000000000",
+    );
+    stubApi({});
+    renderTimeline(
+      makeTracksResponse({ window_start_ns: 3_000_000_000, window_end_ns: 4_000_000_000 }),
+      makeCursor({ position_ns: 2_000_000_000 }),
+    );
+
+    expect(screen.getByTestId("window-range-exact")).toHaveTextContent("3000000000 → 4000000000");
+    await waitFor(() => expect(searchParams().get("window_start_ns")).toBe("3000000000"));
+    expect(searchParams().get("window_end_ns")).toBe("4000000000");
+    expect(searchParams().get("at_ns")).toBe("2000000000");
+  });
+
+  it("地址栏窗口不合法时被实际窗口覆盖，页面照常渲染且不报错", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/timeline?machine_id=machine%3Auos-PC&boot_id=boot-1&window_start_ns=9000000000&window_end_ns=1000000000",
+    );
+    stubApi({});
+    renderTimeline(makeTracksResponse({ window_start_ns: AXIS_START, window_end_ns: AXIS_END }));
+
+    expect(screen.getByTestId("timeline-replay")).toBeInTheDocument();
+    expect(screen.getByTestId("window-range-exact")).toHaveTextContent(
+      `${AXIS_START} → ${AXIS_END}`,
+    );
+    await waitFor(() => expect(searchParams().get("window_start_ns")).toBe(String(AXIS_START)));
+    expect(searchParams().get("window_end_ns")).toBe(String(AXIS_END));
+    expect(screen.queryByTestId("timeline-error")).not.toBeInTheDocument();
+  });
+
   it("页头的服务诊断链接带当前 at_ns", () => {
     stubApi({});
     renderTimeline(makeTracksResponse(), makeCursor({ position_ns: 3_000_000_000 }));
