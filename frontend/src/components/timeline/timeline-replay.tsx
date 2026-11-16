@@ -182,10 +182,14 @@ export function TimelineReplay({
   const cursorPosition = cursor.position_ns;
   const cursorInside = cursorPosition !== null && isInsideWindow(cursorPosition, displayRange);
 
-  // 游标变化就写地址栏。replaceState 不触发路由跳转，窗口与轨道保持原样，也不会新增请求。
+  // 游标或窗口变化就写地址栏。窗口用后端回显的 displayRange，只有窗口真正变化时才写入；
+  // replaceState 不触发路由跳转，窗口与轨道保持原样，也不会新增请求。
   useEffect(() => {
-    writeCursorToUrl({ atNs: cursorPosition });
-  }, [cursorPosition]);
+    writeCursorToUrl({
+      atNs: cursorPosition,
+      window: axis === null ? undefined : displayRange,
+    });
+  }, [axis, cursorPosition, displayRange]);
 
   const loadTracks = useCallback(
     async (target: WindowRange) => {
